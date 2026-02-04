@@ -422,10 +422,13 @@ function update() {
     const feetOnGround = (player.limbs.leftLeg.onGround || player.limbs.rightLeg.onGround);
 
     // Apply physics
-    if (totalGrip < CONFIG.playerWeight && !feetOnGround) {
-        // Not enough grip and not on ground - potential slipping/falling
+    // Apply physics
 
-        // 1. SLIPPING LOGIC (Weak holds detach)
+    // 1. SLIPPING LOGIC (Risk of losing holds if grip is suboptimal)
+    // Even if we don't fall, we might slip if grip < weight
+    if (totalGrip < CONFIG.playerWeight && !feetOnGround) {
+        // Not enough grip to be perfectly stable - potential slipping
+
         // Find attached limbs
         let attachedLimbs = [];
         for (const limbName in player.limbs) {
@@ -450,11 +453,12 @@ function update() {
                 player.limbs[weakest.name].wasReleased = true;
             }
         }
+    }
 
-        // 2. FALLING LOGIC (Gravity)
-        // If we have minimal grip (or just generally insufficient), logic dictates we fall
-        // But the tether constraint prevents falling if at least one strong hold exists.
-        // However, if we are here, total grip is < 1.0.
+    // 2. FALLING LOGIC (Gravity applies only if grip is insufficient to hold weight)
+    // We only fall if total grip is very low (below minGripToHold)
+    if (totalGrip < CONFIG.minGripToHold && !feetOnGround) {
+        // Not enough grip to hold at all - FALLING
 
         // Apply gravity
         gameState.falling = true;
