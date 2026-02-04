@@ -39,6 +39,7 @@ const CONFIG = {
     // Grip Physics
     minGripToHold: 0.3,       // Lower threshold to avoid instant falling
     playerWeight: 0.95,       // Slightly easier to hold weight
+    fallGracePeriod: 60,      // Frames (~1 second) before falling when grip is lost
 
     // Ground
     groundY: 0, // Will be set based on canvas height
@@ -263,6 +264,7 @@ let gameState = {
     bestHeight: 0,
     gameOver: false,
     falling: false,
+    fallTimer: 0,
     onGround: true,
     keysPressed: {}
 };
@@ -322,6 +324,7 @@ function resetPlayerState() {
         bestHeight: gameState.bestHeight, // Preserve best height
         gameOver: false,
         falling: false,
+        fallTimer: 0,
         onGround: true,
         keysPressed: {}
     };
@@ -470,24 +473,35 @@ function update() {
 
     // Falling Logic
     if (totalGrip < CONFIG.minGripToHold && !feetOnGround) {
-        gameState.falling = true;
-        gameState.onGround = false;
-        player.velocityY += CONFIG.gravity;
-        player.velocityY = Math.min(player.velocityY, CONFIG.maxFallSpeed);
-        player.y += player.velocityY;
+        // Increment fall timer (Grace Period)
+        gameState.fallTimer++;
 
-        for (const limbName in player.limbs) {
-            if (!player.limbs[limbName].grabbedAt) {
-                player.limbs[limbName].y += player.velocityY;
+        // Visual Instability (Wobble)
+        player.x += (Math.random() - 0.5) * 4;
+        player.y += (Math.random() - 0.5) * 4;
+
+        if (gameState.fallTimer > CONFIG.fallGracePeriod) {
+            // GRACE PERIOD OVER - FALL!
+            gameState.falling = true;
+            gameState.onGround = false;
+            player.velocityY += CONFIG.gravity;
+            player.velocityY = Math.min(player.velocityY, CONFIG.maxFallSpeed);
+            player.y += player.velocityY;
+
+            for (const limbName in player.limbs) {
+                if (!player.limbs[limbName].grabbedAt) {
+                    player.limbs[limbName].y += player.velocityY;
+                }
             }
         }
 
-        // Ground Collision
+        // Ground Collision (Safety check even during grace period)
         const feetY = player.y + CONFIG.torsoLength / 2 + CONFIG.upperLegLength + CONFIG.lowerLegLength;
         if (feetY >= CONFIG.groundY) {
             player.y = CONFIG.groundY - CONFIG.torsoLength / 2 - CONFIG.upperLegLength - CONFIG.lowerLegLength + 50;
             player.velocityY = 0;
             gameState.falling = false;
+            gameState.fallTimer = 0;
             gameState.onGround = true;
 
             if (gameState.selectedLimb !== 'leftLeg') {
@@ -500,7 +514,9 @@ function update() {
             }
         }
     } else {
+        // Recovered Grip
         gameState.falling = false;
+        gameState.fallTimer = 0;
         player.velocityY = 0;
         if (feetOnGround) {
             gameState.onGround = true;
@@ -893,11 +909,24 @@ function updateHUD() {
 
 function updateGripMeter(grip) {
     const meterFill = document.getElementById('gripMeter');
-    const percentage = Math.min(100, (grip / CONFIG.playerWeight) * 100);
+
+    // If in grace period, calculate remaining time
+    let percentage;
+    if (gameState.fallTimer > 0) {
+        // Flashing/Dropping effect based on remaining grace time
+        const remainingFraction = 1 - (gameState.fallTimer / CONFIG.fallGracePeriod);
+        percentage = remainingFraction * 100;
+        meterFill.classList.add('danger'); // Force danger color
+        meterFill.style.opacity = (Math.floor(Date.now() / 100) % 2 === 0) ? '1' : '0.5'; // Flash
+    } else {
+        percentage = Math.min(100, (grip / CONFIG.playerWeight) * 100);
+        meterFill.style.opacity = '1';
+        meterFill.classList.remove('warning', 'danger');
+        if (percentage < 50) meterFill.classList.add('danger');
+        else if (percentage < 100) meterFill.classList.add('warning');
+    }
+
     meterFill.style.width = `${percentage}%`;
-    meterFill.classList.remove('warning', 'danger');
-    if (percentage < 50) meterFill.classList.add('danger');
-    else if (percentage < 100) meterFill.classList.add('warning');
 }
 
 // Init Game
