@@ -39,6 +39,7 @@ const CONFIG = {
     // Grip Physics
     minGripToHold: 0.3,       // Lower threshold to avoid instant falling
     playerWeight: 0.95,       // Slightly easier to hold weight
+    maxDisplayedGrip: 1.5,    // Grip amount that equals "100%" on the meter (1.5x body weight)
     fallGracePeriod: 60,      // Frames (~1 second) before falling when grip is lost
 
     // Ground
@@ -51,7 +52,10 @@ const CONFIG = {
     selectedLimbColor: '#667eea',
     attachedLimbColor: '#4caf50',
     groundColor: '#5d4e37',
-    groundTopColor: '#8b7355'
+    groundTopColor: '#8b7355',
+    ropeColor: '#ff0055',
+    pitonColor: '#b2bec3',
+    maxPitons: 10
 };
 
 // ============================================
@@ -142,8 +146,8 @@ function getGrabbabilityAt(x, y) {
     }
 
     const noiseVal = value / maxValue;
-    const baseDetail = 0.4;
-    return noiseVal * (baseDetail + 0.6 * pathFactor);
+    const baseDetail = 0.55; // Increased from 0.4 to make general climbing possible everywhere
+    return noiseVal * (baseDetail + 0.45 * pathFactor); // Reduced path dominance slightly
 }
 
 function calculateJoint(startX, startY, endX, endY, length1, length2, bendDirection) {
@@ -263,10 +267,18 @@ let gameState = {
     maxHeight: 0,
     bestHeight: 0,
     gameOver: false,
+    gameOver: false,
     falling: false,
+    dangling: false,
+    dangling: false,
     fallTimer: 0,
     onGround: true,
-    keysPressed: {}
+    keysPressed: {},
+    pitons: [],
+    gamepadState: {
+        buttons: [], // Previous frame button states
+        axes: []
+    }
 };
 
 let player = {
@@ -323,10 +335,15 @@ function resetPlayerState() {
         maxHeight: 0,
         bestHeight: gameState.bestHeight, // Preserve best height
         gameOver: false,
+        gameOver: false,
         falling: false,
+        dangling: false,
+        dangling: false,
         fallTimer: 0,
         onGround: true,
-        keysPressed: {}
+        keysPressed: {},
+        pitons: [],
+        gamepadState: { buttons: [], axes: [] }
     };
     updateHUD();
 }
@@ -356,11 +373,20 @@ function handleKeyDown(e) {
         if (e.code === 'Space') restartGame();
         return;
     }
+
+    // Prevent repeat for all keys handled below
     if (gameState.keysPressed[e.key]) return;
 
     const keyMap = { 'q': 'leftArm', 'Q': 'leftArm', 'e': 'rightArm', 'E': 'rightArm', 'a': 'leftLeg', 'A': 'leftLeg', 'd': 'rightLeg', 'D': 'rightLeg' };
 
-    if (keyMap[e.key]) {
+    // Piton Placement
+    if (e.code === 'KeyS' || e.key === 's' || e.key === 'S') {
+        if (!gameState.falling && !gameState.gameOver) {
+            placePiton();
+        }
+        // Fall through to mark key as pressed
+    }
+    else if (keyMap[e.key]) {
         const newLimb = keyMap[e.key];
         const previousLimb = gameState.selectedLimb;
         const limb = player.limbs[newLimb];
@@ -427,15 +453,111 @@ function handleClick(e) {
         limb.grabbedAt = { x: limb.x, y: limb.y, stickiness };
         limb.wasReleased = false;
         limb.previousGrab = null;
+
+        // Recover from dangling if we grab something
+        // BUT only if we are stable! Handled in update() now.
         updateHUD();
     }
+}
+
+// ============================================
+// GAMEPAD HANDLING
+// ============================================
+
+function updateGamepad() {
+    const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const gp = gamepads[0]; // Use first controller
+    if (!gp) return;
+
+    // 1. Stick Movement (Cursor)
+    const deadzone = 0.1;
+    if (Math.abs(gp.axes[0]) > deadzone || Math.abs(gp.axes[1]) > deadzone) {
+        // Move cursor relative to camera or screen?
+        // Let's move it like a mouse cursor speed
+        const speed = 15;
+        gameState.mousePos.x += gp.axes[0] * speed;
+        // Keep cursor within bounds for X
+        gameState.mousePos.x = Math.max(0, Math.min(canvas.width, gameState.mousePos.x));
+
+        gameState.mousePos.y += gp.axes[1] * speed;
+        // Y moves in world space, but mousePos is usually absolute world coords?
+        // MouseMove event adds 'camera.y'.
+        // Here we just modify mousePos directly.
+        // NOTE: mousePos.y includes camera.y.
+    }
+
+    // 2. Button Handling (Debounce)
+    const buttons = gp.buttons;
+    const pressed = (idx) => buttons[idx] && buttons[idx].pressed && !gameState.gamepadState.buttons[idx];
+
+    // X (Index 2) - Grab
+    if (pressed(2)) {
+        // Simulate Click
+        handleClick();
+    }
+
+    // A (Index 0) - Piton
+    if (pressed(0)) {
+        if (!gameState.falling && !gameState.gameOver) {
+            placePiton();
+        }
+    }
+
+    // LB (4) - Left Arm
+    if (pressed(4)) switchLimb('leftArm');
+
+    // RB (5) - Right Arm
+    if (pressed(5)) switchLimb('rightArm');
+
+    // LT (6) - Left Leg
+    if (pressed(6)) switchLimb('leftLeg');
+
+    // RT (7) - Right Leg
+    if (pressed(7)) switchLimb('rightLeg');
+
+    // Update state for next frame
+    for (let i = 0; i < buttons.length; i++) {
+        gameState.gamepadState.buttons[i] = buttons[i].pressed;
+    }
+}
+
+function switchLimb(newLimb) {
+    if (gameState.selectedLimb === newLimb) {
+        // Same limb pressed again? Double press logic handles release in `handleKeyDown`
+        // Let's implement simpler logic here: Toggle release?
+        // Match keyboard behavior:
+        const limb = player.limbs[newLimb];
+        limb.previousGrab = null;
+        limb.wasReleased = false;
+        if (limb.grabbedAt || limb.onGround) {
+            limb.grabbedAt = null;
+            limb.onGround = false;
+            limb.wasReleased = true;
+        }
+    } else {
+        // Switch
+        const previousLimb = player.limbs[gameState.selectedLimb];
+        if (previousLimb.grabbedAt) {
+            previousLimb.grabbedAt = null;
+            previousLimb.wasReleased = true;
+        } else if (previousLimb.onGround) {
+            previousLimb.onGround = false;
+            previousLimb.wasReleased = true;
+        }
+        previousLimb.previousGrab = null;
+        gameState.selectedLimb = newLimb;
+    }
+    updateHUD();
 }
 
 // ============================================
 // LOGIC LOOPS
 // ============================================
 
+// ============================================
+
 function gameLoop() {
+    updateGamepad(); // Check controller
     update();
     render();
     updateHUD();
@@ -450,6 +572,41 @@ function update() {
     updateFreeLimbs();
 
     const totalGrip = calculateTotalGrip();
+
+    // If dangling, we are safe but hanging. Skip falling logic.
+    if (gameState.dangling) {
+        // Visualize Rope Support
+        if (gameState.pitons.length > 0) {
+            const lastPiton = gameState.pitons[gameState.pitons.length - 1];
+
+            // Swing towards piton X (Pendulum effect)
+            const targetX = lastPiton.x;
+            player.x += (targetX - player.x) * 0.05;
+
+            // Maintain height roughly below piton
+            const targetY = lastPiton.y + 80;
+            // Strong pull to target height if falling below it, gentle drift if above
+            if (player.y > targetY) {
+                player.y += (targetY - player.y) * 0.1;
+                player.velocityY = 0;
+            }
+        }
+
+        player.velocityY *= 0.9;
+
+        // Auto-recover if we have enough grip!
+        if (totalGrip >= CONFIG.minGripToHold) {
+            gameState.dangling = false;
+        }
+
+        // Stop dangling if we touch ground
+        if (player.y >= CONFIG.groundY - 100) {
+            gameState.dangling = false;
+        }
+        updateCamera();
+        return;
+    }
+
     const feetOnGround = (player.limbs.leftLeg.onGround || player.limbs.rightLeg.onGround);
 
     // Slipping Logic
@@ -487,6 +644,48 @@ function update() {
             player.velocityY += CONFIG.gravity;
             player.velocityY = Math.min(player.velocityY, CONFIG.maxFallSpeed);
             player.y += player.velocityY;
+
+            // ROPE CATCH LOGIC (Lead Fall)
+            if (gameState.pitons.length > 0) {
+                const lastPiton = gameState.pitons[gameState.pitons.length - 1];
+
+                // If player was above piton, they fall distance = (playerY - pitonY) * 2 roughly
+                // But we simplify: The rope length is fixed based on the HIGHEST point reached since last piton?
+                // Actually simpler: Rope catches when Distance(Piton, Player) > Slack.
+                // WE simulate slack: Slack is distance from piton to highest point reached, OR just current distance?
+                // Common game simplification: Catches if you fall Y distance > 2 * (StartFallY - PitonY).
+
+                // Let's us a springy catch.
+                // Ideally, if you are at Y=100 and Piton is Y=200 (100m below). Rope logic irrelevant.
+                // If you are at Y=200 and Piton is Y=300 (100m below). You fall past 300 to 400.
+
+                // Current simple implementation:
+                // Calculate 'rope length' as distance between player and piton when the fall *started*?
+                // No, lead climbing means slack is paid out.
+                // Let's assuming the rope is just tight enough to reach the player's current position.
+                // If player moves DOWN, rope goes taut.
+
+                // Wait, if I'm falling, I am moving down.
+                // Catch condition: Player is BELOW the last piton AND distance > fallDistance?
+
+                if (player.y > lastPiton.y) {
+                    // Player is below the piton.
+                    const fallDistance = player.y - lastPiton.y;
+
+                    // Catch faster (shorter rope)
+                    if (fallDistance > 80) {
+                        // CATCH!
+                        player.y = lastPiton.y + 80;
+                        player.velocityY *= -0.3; // Less bounce
+                        if (Math.abs(player.velocityY) < 1) {
+                            player.velocityY = 0;
+                            gameState.falling = false;
+                            gameState.dangling = true; // Enter safe dangling state
+                            gameState.fallTimer = 0;   // Reset danger timer
+                        }
+                    }
+                }
+            }
 
             for (const limbName in player.limbs) {
                 if (!player.limbs[limbName].grabbedAt) {
@@ -779,6 +978,8 @@ function render() {
     }
 
     // Draw Player
+    drawRope();
+    drawPitons();
     drawPlayer();
 
     ctx.restore();
@@ -848,12 +1049,18 @@ function drawPlayer() {
     const selected = player.limbs[gameState.selectedLimb];
     if (!selected.grabbedAt) {
         ctx.beginPath();
-        ctx.arc(selected.x, selected.y, 15, 0, Math.PI * 2);
-        ctx.strokeStyle = CONFIG.selectedLimbColor;
-        ctx.lineWidth = 2;
+        ctx.moveTo(selected.x, selected.y);
+        ctx.lineTo(gameState.mousePos.x, gameState.mousePos.y);
+        ctx.strokeStyle = `rgba(255, 255, 255, 0.3)`;
         ctx.setLineDash([5, 5]);
         ctx.stroke();
         ctx.setLineDash([]);
+
+        // Draw Cursor Target (Useful for gamepad)
+        ctx.beginPath();
+        ctx.arc(gameState.mousePos.x, gameState.mousePos.y, 8, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.stroke();
     }
 }
 
@@ -904,29 +1111,123 @@ function updateHUD() {
     document.getElementById('heightDisplay').innerHTML = `
         <div class="current-height">Height: ${displayHeight}m</div>
         <div class="best-height">Best: ${gameState.bestHeight}m</div>
+        <div style="font-size: 10px; color: #888; margin-top: 4px">Pitons: ${gameState.pitons.length}/${CONFIG.maxPitons}</div>
     `;
 }
 
+function placePiton() {
+    const newPiton = { x: player.x, y: player.y - 20 }; // Place slightly above center mass
+    gameState.pitons.push(newPiton);
+    if (gameState.pitons.length > CONFIG.maxPitons) {
+        gameState.pitons.shift();
+    }
+    updateHUD();
+}
+
+function drawPitons() {
+    ctx.fillStyle = CONFIG.pitonColor;
+    for (const p of gameState.pitons) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        // Ring
+        ctx.strokeStyle = '#7f8c8d';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+}
+
+function drawRope() {
+    ctx.strokeStyle = CONFIG.ropeColor;
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+
+    // Start at ground center
+    let startX = canvas.width / 2;
+    let startY = CONFIG.groundY;
+    ctx.moveTo(startX, startY);
+
+    // Through all pitons
+    for (const p of gameState.pitons) {
+        ctx.lineTo(p.x, p.y);
+        startX = p.x;
+        startY = p.y;
+    }
+
+    // To Player
+    // Calculate bezier curve for slack if not falling and climbing up
+    const endX = player.x;
+    const endY = player.y;
+
+    if (!gameState.falling && !gameState.gameOver) {
+        // Add Slack (curve downward)
+        // Control point is midpoint + drop
+        const midX = (startX + endX) / 2;
+        const midY = (startY + endY) / 2 + 50; // 50px hanging slack
+        ctx.quadraticCurveTo(midX, midY, endX, endY);
+    } else {
+        // Taut when falling
+        ctx.lineTo(endX, endY);
+    }
+
+    ctx.stroke();
+}
+
 function updateGripMeter(grip) {
+    const meterContainer = document.querySelector('.meter-bar');
     const meterFill = document.getElementById('gripMeter');
 
+    // Scale: 0 to CONFIG.playerWeight * 1.5
+    // 100% = 1.5x body weight (Super secure)
+    // Threshold = 1.0x body weight (Slipping point)
+    const maxScale = CONFIG.playerWeight * 1.5;
+    const percentage = Math.min(100, (grip / maxScale) * 100);
+    const slipThresholdPct = (1 / 1.5) * 100; // ~66%
+
+    // Add visual marker for threshold if not exists
+    let thresholdLine = document.getElementById('gripThresholdLine');
+    if (!thresholdLine) {
+        thresholdLine = document.createElement('div');
+        thresholdLine.id = 'gripThresholdLine';
+        thresholdLine.style.position = 'absolute';
+        thresholdLine.style.left = `${slipThresholdPct}%`;
+        thresholdLine.style.top = '0';
+        thresholdLine.style.bottom = '0';
+        thresholdLine.style.width = '2px';
+        thresholdLine.style.backgroundColor = 'rgba(255,255,255,0.8)';
+        thresholdLine.style.zIndex = '10';
+        thresholdLine.title = "Minimum Grip to Avoid Slipping";
+
+        // Ensure parent is relative
+        meterContainer.style.position = 'relative';
+        meterContainer.appendChild(thresholdLine);
+    }
+
     // If in grace period, calculate remaining time
-    let percentage;
     if (gameState.fallTimer > 0) {
         // Flashing/Dropping effect based on remaining grace time
         const remainingFraction = 1 - (gameState.fallTimer / CONFIG.fallGracePeriod);
-        percentage = remainingFraction * 100;
+        const flashPct = remainingFraction * 100; // Shrink to 0
+
         meterFill.classList.add('danger'); // Force danger color
         meterFill.style.opacity = (Math.floor(Date.now() / 100) % 2 === 0) ? '1' : '0.5'; // Flash
+        meterFill.style.width = `${flashPct}%`;
     } else {
-        percentage = Math.min(100, (grip / CONFIG.playerWeight) * 100);
         meterFill.style.opacity = '1';
+        meterFill.style.width = `${percentage}%`;
         meterFill.classList.remove('warning', 'danger');
-        if (percentage < 50) meterFill.classList.add('danger');
-        else if (percentage < 100) meterFill.classList.add('warning');
-    }
 
-    meterFill.style.width = `${percentage}%`;
+        // Color logic
+        if (percentage < (CONFIG.minGripToHold / maxScale * 100)) {
+            meterFill.classList.add('danger'); // Falling (Red)
+        } else if (grip < CONFIG.playerWeight) {
+            meterFill.classList.add('warning'); // Slipping (Orange/Yellow)
+        } else {
+            // Good grip (Green)
+        }
+    }
 }
 
 // Init Game
