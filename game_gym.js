@@ -50,9 +50,9 @@ const CONFIG = {
     maxGripInstability: 120,  // [NEW] Frames before slipping when grip is insufficient (~2s)
 
     // Stamina System
-    maxStamina: 100,
-    staminaDepletion: 0.3,    // Per frame (approx 5.5 seconds to empty from full hanging)
-    staminaRegen: 1.0,        // Per frame (fast recovery when stable)
+    maxStamina: 200,
+    staminaDepletion: 0.15,   // Per frame (approx 22 seconds to empty from full hanging)
+    staminaRegen: 2.0,        // Per frame (faster recovery when stable)
 
     // Ground
     groundY: 0, // Will be set based on canvas height
@@ -298,10 +298,8 @@ class WallRenderer {
         const ctx = canvas.getContext('2d');
         const startY = chunkY * this.chunkSize;
 
-        // Clear Background (transparent)
         ctx.clearRect(0, 0, width, this.chunkSize);
 
-        // Render noise with jittered sampling to remove grid lines
         for (let y = 0; y < this.chunkSize; y += this.resolution) {
             const worldY = startY + y;
             const wallCenterX = getWallCenter(worldY);
@@ -309,18 +307,14 @@ class WallRenderer {
             const wallLeft = wallCenterX - wallWidth / 2;
             const wallRight = wallCenterX + wallWidth / 2;
 
-            // Optimization: Only scan X within the wall bounds + padding
-            // We align x to resolution grid
             let startX = Math.floor((wallLeft - 20) / this.resolution) * this.resolution;
             let endX = Math.ceil((wallRight + 20) / this.resolution) * this.resolution;
             startX = Math.max(0, startX);
             endX = Math.min(width, endX);
 
             for (let x = startX; x < width; x += this.resolution) {
-                // Check bounds exactly
                 if (x < wallLeft || x > wallRight) continue;
 
-                // Jittered sampling
                 const jitterX = (Math.random() - 0.5) * this.resolution;
                 const jitterY = (Math.random() - 0.5) * this.resolution;
 
@@ -329,44 +323,77 @@ class WallRenderer {
                 const noiseVal = getGrabbabilityAt(sampleX, sampleY);
                 const feature = getWallFeatures(sampleX, sampleY);
 
-                if (noiseVal >= CONFIG.grabThreshold) {
-                    const quality = (noiseVal - CONFIG.grabThreshold) / (1 - CONFIG.grabThreshold);
+                const quality = (noiseVal - CONFIG.grabThreshold) / (1 - CONFIG.grabThreshold);
+                const isGrabbable = noiseVal >= CONFIG.grabThreshold;
 
-                    // Feature-based coloring
-                    let baseR = 45, baseG = 52, baseB = 54;
-                    
-                    switch(feature) {
-                        case 1: // Crack - darker with slight blue tint
-                            baseR = 35; baseG = 40; baseB = 50;
-                            break;
-                        case 2: // Ledge - lighter brown
-                            baseR = 80; baseG = 70; baseB = 60;
-                            break;
-                        case 3: // Smooth - grayish
-                            baseR = 60; baseG = 60; baseB = 65;
-                            break;
-                    }
+                let baseR, baseG, baseB;
+                let textureType = 'rock';
+                let roughness = 0.5;
 
-                    // Add secondary microscopic noise for texture dusting
-                    const dusting = (Math.random() - 0.5) * 10;
-                    const brightness = 8 + Math.floor(quality * 35) + dusting;
-
-                    const r = Math.max(0, Math.min(255, baseR + brightness));
-                    const g = Math.max(0, Math.min(255, baseG + brightness + 3));
-                    const b = Math.max(0, Math.min(255, baseB + brightness + 4));
-
-                    ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                    // Slight randomized overlaps break grid lines
-                    const drawW = this.resolution + (Math.random() * 2);
-                    const drawH = this.resolution + (Math.random() * 2);
-                    ctx.fillRect(x + (Math.random() - 0.5) * 2, y + (Math.random() - 0.5) * 2, drawW, drawH);
+                if (feature === 1) {
+                    baseR = 35; baseG = 42; baseB = 48;
+                    textureType = 'crack';
+                    roughness = 0.9;
+                } else if (feature === 2) {
+                    baseR = 75; baseG = 68; baseB = 58;
+                    textureType = 'ledge';
+                    roughness = 0.3;
+                } else if (feature === 3) {
+                    baseR = 55; baseG = 58; baseB = 62;
+                    textureType = 'smooth';
+                    roughness = 0.1;
                 } else {
-                    // Wall Background (Non-grabbable rock)
-                    // We render this explicitely now since we cleared the canvas
-                    // Only draw inside the wall strip
-                    const baseC = 30;
-                    ctx.fillStyle = `rgb(${baseC}, ${baseC + 2}, ${baseC + 4})`;
-                    ctx.fillRect(x, y, this.resolution, this.resolution);
+                    baseR = 42; baseG = 48; baseB = 52;
+                    roughness = 0.5;
+                }
+
+                if (isGrabbable) {
+                    roughness = 0.3 + (quality * 0.7);
+
+                    if (textureType === 'crack') {
+                        const darken = 10 + (quality * 15);
+                        baseR = Math.max(0, baseR - darken);
+                        baseG = Math.max(0, baseG - darken);
+                        baseB = Math.max(0, baseB - darken);
+                    } else if (textureType === 'ledge') {
+                        const lighten = 15 + (quality * 20);
+                        baseR = Math.min(120, baseR + lighten);
+                        baseG = Math.min(120, baseG + lighten);
+                        baseB = Math.min(120, baseB + lighten);
+                    } else if (textureType === 'smooth') {
+                        if (quality > 0.5) {
+                            baseR = Math.min(80, baseR + 20);
+                            baseG = Math.min(85, baseG + 22);
+                            baseB = Math.min(90, baseB + 25);
+                        }
+                    }
+                } else {
+                    roughness = 0.1;
+
+                    if (feature === 3) {
+                        baseR = 70; baseG = 72; baseB = 75;
+                    }
+                }
+
+                const brightness = (Math.random() - 0.5) * 8 * roughness;
+                const r = Math.max(0, Math.min(255, baseR + brightness));
+                const g = Math.max(0, Math.min(255, baseG + brightness + 2));
+                const b = Math.max(0, Math.min(255, baseB + brightness + 3));
+
+                ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+
+                const drawW = this.resolution + (Math.random() * 2);
+                const drawH = this.resolution + (Math.random() * 2);
+                ctx.fillRect(x + (Math.random() - 0.5) * 2, y + (Math.random() - 0.5) * 2, drawW, drawH);
+
+                if (isGrabbable && quality > 0.6 && Math.random() < 0.15) {
+                    ctx.fillStyle = `rgba(${Math.max(0, r - 20)}, ${Math.max(0, g - 20)}, ${Math.max(0, b - 25)}, 0.4)`;
+                    ctx.fillRect(x + (Math.random() - 0.5) * 4, y + (Math.random() - 0.5) * 4, 2, 4);
+                }
+
+                if (isGrabbable && quality > 0.7 && Math.random() < 0.08) {
+                    ctx.fillStyle = `rgba(${Math.min(255, r + 30)}, ${Math.min(255, g + 30)}, ${Math.min(255, b + 35)}, 0.3)`;
+                    ctx.fillRect(x + (Math.random() - 0.5) * 3, y + (Math.random() - 0.5) * 3, 3, 3);
                 }
             }
         }
@@ -895,43 +922,48 @@ function handleKeyDown(e) {
     }
 
     else if (keyMap[e.key]) {
-        const newLimb = keyMap[e.key];
-        const previousLimb = gameState.selectedLimb;
-        const limb = player.limbs[newLimb];
-
-        if (newLimb !== previousLimb) {
-            const prevLimbObj = player.limbs[previousLimb];
-            prevLimbObj.wasReleased = false;
-            prevLimbObj.previousGrab = null;
-        }
-
-        if (newLimb === previousLimb) {
-            // Double press = Force Release
-            limb.previousGrab = null;
-            limb.wasReleased = false;
-            if (limb.grabbedAt || limb.onGround) {
-                limb.grabbedAt = null;
-                limb.onGround = false;
-            }
-        } else {
-            // Selection switch
-            if (limb.grabbedAt) {
-                limb.grabbedAt = null;
-                limb.wasReleased = true;
-            } else if (limb.onGround) {
-                limb.onGround = false;
-                limb.wasReleased = true;
-            }
-            limb.previousGrab = null;
-        }
-        gameState.selectedLimb = newLimb;
-        updateHUD();
+        selectLimb(keyMap[e.key]);
     }
     gameState.keysPressed[e.key] = true;
 }
 
 function handleKeyUp(e) {
     gameState.keysPressed[e.key] = false;
+}
+
+function selectLimb(newLimb) {
+    if (gameState.gameOver) return;
+    
+    const previousLimb = gameState.selectedLimb;
+    const limb = player.limbs[newLimb];
+    
+    if (newLimb !== previousLimb) {
+        const prevLimbObj = player.limbs[previousLimb];
+        prevLimbObj.wasReleased = false;
+        prevLimbObj.previousGrab = null;
+    }
+    
+    if (newLimb === previousLimb) {
+        // Double press = Force Release
+        limb.previousGrab = null;
+        limb.wasReleased = false;
+        if (limb.grabbedAt || limb.onGround) {
+            limb.grabbedAt = null;
+            limb.onGround = false;
+        }
+    } else {
+        // Selection switch
+        if (limb.grabbedAt) {
+            limb.grabbedAt = null;
+            limb.wasReleased = true;
+        } else if (limb.onGround) {
+            limb.onGround = false;
+            limb.wasReleased = true;
+        }
+        limb.previousGrab = null;
+    }
+    gameState.selectedLimb = newLimb;
+    updateHUD();
 }
 
 function handleMouseMove(e) {
@@ -997,6 +1029,121 @@ function handleClick(e) {
 }
 
 // ============================================
+// GAMEPAD SUPPORT
+// ============================================
+let gamepadAPI = {
+    controller: null,
+    buttons: [
+        { name: 'leftArm', index: 4, pressed: false },  // LB
+        { name: 'rightArm', index: 5, pressed: false }, // RB
+        { name: 'leftLeg', index: 6, pressed: false },  // LT
+        { name: 'rightLeg', index: 7, pressed: false }, // RT
+        { name: 'grab', index: 2, pressed: false },     // X (Xbox) / Square (PlayStation)
+        { name: 'piton', index: 0, pressed: false },    // A (Xbox) / Cross (PlayStation)
+    ],
+    lastButtonState: {},
+    connected: false,
+    checkGamepad: function() {
+        const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+        if (gamepads.length === 0) return false;
+        
+        // Find first valid gamepad
+        for (let i = 0; i < gamepads.length; i++) {
+            if (gamepads[i] && gamepads[i].connected) {
+                gamepadAPI.controller = gamepads[i];
+                return true;
+            }
+        }
+        return false;
+    },
+    updateButtons: function() {
+        if (!gamepadAPI.controller) return;
+
+        const buttons = gamepadAPI.controller.buttons;
+        const buttonStates = {};
+
+        gamepadAPI.buttons.forEach(button => {
+            const pressed = buttons[button.index] ? buttons[button.index].pressed : false;
+            buttonStates[button.name] = pressed;
+        });
+
+        // Detect button presses (edge detection)
+        Object.keys(buttonStates).forEach(name => {
+            const currentState = buttonStates[name];
+            const lastState = gamepadAPI.lastButtonState[name] || false;
+            
+            if (currentState && !lastState) {
+                gamepadAPI.handleButtonPress(name);
+            }
+            
+            gamepadAPI.lastButtonState[name] = currentState;
+        });
+    },
+    handleButtonPress: function(buttonName) {
+        switch(buttonName) {
+            case 'leftArm':
+            case 'rightArm':
+            case 'leftLeg':
+            case 'rightLeg':
+                selectLimb(buttonName);
+                break;
+            case 'grab':
+                const limb = player.limbs[gameState.selectedLimb];
+                if (!limb.grabbedAt && !limb.onGround) {
+                    const limbX = limb.x;
+                    const limbY = limb.y;
+                    const stickiness = getGrabbabilityAt(limbX, limbY);
+                    if (stickiness >= CONFIG.grabThreshold) {
+                        limb.grabbedAt = { x: limbX, y: limbY, time: Date.now() };
+                        limb.reachProgress = 0;
+                    }
+                }
+                break;
+            case 'piton':
+                if (gameState.pitons.length === 0 || 
+                    gameState.pitons[gameState.pitons.length - 1].y > player.y + 100) {
+                    gameState.pitons.push({ x: player.x, y: player.y });
+                }
+                break;
+        }
+    },
+    handleStickInput: function() {
+        if (!gamepadAPI.controller) return;
+        
+        const axes = gamepadAPI.controller.axes;
+        if (!axes || axes.length < 2) return;
+
+        const x = axes[0]; // Left stick X
+        const y = axes[1]; // Left stick Y
+        
+        // Deadzone to prevent drift
+        const deadzone = 0.15;
+        if (Math.abs(x) < deadzone && Math.abs(y) < deadzone) return;
+
+        const limb = player.limbs[gameState.selectedLimb];
+        if (limb.grabbedAt || limb.onGround) return;
+
+        // Move selected limb based on stick input
+        const speed = CONFIG.limbReachSpeed * 1.5;
+        limb.x += x * speed;
+        limb.y += y * speed;
+        constrainLimbToBody(limb, gameState.selectedLimb);
+    }
+};
+
+// Gamepad event listeners
+window.addEventListener('gamepadconnected', function(e) {
+    console.log('Gamepad connected:', e.gamepad.id);
+    gamepadAPI.connected = true;
+});
+
+window.addEventListener('gamepaddisconnected', function(e) {
+    console.log('Gamepad disconnected:', e.gamepad.id);
+    gamepadAPI.connected = false;
+    gamepadAPI.controller = null;
+});
+
+// ============================================
 // LOGIC LOOPS
 // ============================================
 
@@ -1012,6 +1159,12 @@ function gameLoop() {
 
 function update() {
     if (gameState.gameOver) return;
+
+    // Handle gamepad input
+    if (gamepadAPI.checkGamepad()) {
+        gamepadAPI.updateButtons();
+        gamepadAPI.handleStickInput();
+    }
 
     updateSelectedLimb();
     updateGroundMovement();
@@ -1065,8 +1218,29 @@ function update() {
         // Safe & Stable (or on ground) -> Regenerate
         gameState.stamina = Math.min(CONFIG.maxStamina, gameState.stamina + CONFIG.staminaRegen);
     } else {
-        // Exertion -> Deplete
-        gameState.stamina = Math.max(0, gameState.stamina - CONFIG.staminaDepletion);
+        // Exertion -> Deplete based on grip quality
+        // Calculate total grip quality from attached limbs
+        let totalGripQuality = 0;
+        let attachedLimbs = 0;
+        for (const limbName in player.limbs) {
+            const limb = player.limbs[limbName];
+            if (limb.grabbedAt) {
+                totalGripQuality += limb.grabbedAt.stickiness;
+                attachedLimbs++;
+            }
+        }
+        
+        // Average grip quality (0 to 1)
+        const avgGripQuality = attachedLimbs > 0 ? totalGripQuality / attachedLimbs : 0;
+        
+        // Scale depletion: better grip = slower depletion
+        // Range: 0.5x to 2.0x base depletion rate
+        // Good holds (1.0) -> 0.5x depletion
+        // Bad holds (0.0) -> 2.0x depletion
+        const depletionMultiplier = 2.0 - (avgGripQuality * 1.5);
+        const actualDepletion = CONFIG.staminaDepletion * depletionMultiplier;
+        
+        gameState.stamina = Math.max(0, gameState.stamina - actualDepletion);
     }
 
     // Stamina Failure (Muscle Failure)
@@ -1256,6 +1430,9 @@ function drawStaminaBar() {
 }
 
 function updateSelectedLimb() {
+    // Skip mouse following if gamepad is active
+    if (gamepadAPI.controller) return;
+
     const limb = player.limbs[gameState.selectedLimb];
     if (!limb.grabbedAt && !limb.onGround) {
         const dx = gameState.mousePos.x - limb.x;
@@ -1598,17 +1775,6 @@ function drawPlayer() {
         }
     }
 
-    // Reach Indicator
-    const selected = player.limbs[gameState.selectedLimb];
-    if (!selected.grabbedAt) {
-        ctx.beginPath();
-        ctx.moveTo(selected.x, selected.y);
-        ctx.lineTo(gameState.mousePos.x, gameState.mousePos.y);
-        ctx.strokeStyle = `rgba(255, 255, 255, 0.3)`;
-        ctx.setLineDash([5, 5]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-    }
 }
 
 function drawLimb(limbName, limb, color, alpha) {
@@ -1697,90 +1863,35 @@ function drawPitons() {
 }
 
 function drawHoldPreview() {
-    // Only show preview for the selected limb if it's free
     const limb = player.limbs[gameState.selectedLimb];
     if (limb.grabbedAt || limb.onGround) return;
 
-    // Check grabbability at the LIMB position (not mouse position)
     const limbX = limb.x;
     const limbY = limb.y;
     const stickiness = getGrabbabilityAt(limbX, limbY);
 
     if (stickiness < CONFIG.grabThreshold) return;
 
-    // Calculate quality color (green = good, yellow = medium, red = poor)
     const quality = (stickiness - CONFIG.grabThreshold) / (1 - CONFIG.grabThreshold);
-    let color;
-    if (quality > 0.7) {
-        color = 'rgba(76, 175, 80, 0.6)'; // Green
-    } else if (quality > 0.4) {
-        color = 'rgba(255, 193, 7, 0.6)'; // Yellow
-    } else {
-        color = 'rgba(244, 67, 54, 0.6)'; // Red
-    }
+    const rgb = getGrabbabilityColor(stickiness, false);
 
-    // Draw preview circle at LIMB position
     ctx.beginPath();
-    ctx.arc(limbX, limbY, 15, 0, Math.PI * 2);
-    ctx.fillStyle = color;
+    ctx.arc(limbX, limbY, 12, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0.3)`;
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.strokeStyle = `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0.8)`;
     ctx.lineWidth = 2;
     ctx.stroke();
-
-    // Draw quality indicator ring at LIMB position
-    ctx.beginPath();
-    ctx.arc(limbX, limbY, 20, 0, Math.PI * 2);
-    ctx.strokeStyle = `rgba(255, 255, 255, ${0.3 + quality * 0.5})`;
-    ctx.lineWidth = 3;
-    ctx.stroke();
-
-    // Draw nearby hold highlights (scan in grid pattern around selected limb)
-    drawNearbyHoldHighlights();
 }
 
-function drawNearbyHoldHighlights() {
-    const limb = player.limbs[gameState.selectedLimb];
-    if (limb.grabbedAt || limb.onGround) return;
-
-    const scanRadius = 80;
-    const scanStep = 20;
-    const limbX = limb.x;
-    const limbY = limb.y;
-
-    ctx.globalAlpha = 0.3;
-
-    for (let dx = -scanRadius; dx <= scanRadius; dx += scanStep) {
-        for (let dy = -scanRadius; dy <= scanRadius; dy += scanStep) {
-            const checkX = limbX + dx;
-            const checkY = limbY + dy;
-
-            // Skip if too close to limb position (already shown)
-            if (Math.abs(dx) < 15 && Math.abs(dy) < 15) continue;
-
-            const stickiness = getGrabbabilityAt(checkX, checkY);
-            if (stickiness >= CONFIG.grabThreshold) {
-                const quality = (stickiness - CONFIG.grabThreshold) / (1 - CONFIG.grabThreshold);
-
-                // Color based on quality
-                let color;
-                if (quality > 0.7) {
-                    color = '76, 175, 80'; // Green
-                } else if (quality > 0.4) {
-                    color = '255, 193, 7'; // Yellow
-                } else {
-                    color = '244, 67, 54'; // Red
-                }
-
-                ctx.fillStyle = `rgba(${color}, ${0.15 + quality * 0.25})`;
-                ctx.beginPath();
-                ctx.arc(checkX, checkY, 6 + quality * 6, 0, Math.PI * 2);
-                ctx.fill();
-            }
-        }
+function getGrabbabilityColor(grabbability, asString) {
+    if (grabbability > 0.7) {
+        return asString ? 'rgb(76, 175, 80)' : [76, 175, 80];
+    } else if (grabbability > 0.4) {
+        return asString ? 'rgb(255, 193, 7)' : [255, 193, 7];
+    } else {
+        return asString ? 'rgb(244, 67, 54)' : [244, 67, 54];
     }
-
-    ctx.globalAlpha = 1.0;
 }
 
 function drawRope() {
