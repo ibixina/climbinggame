@@ -73,7 +73,7 @@ const CONFIG = {
     wallWidth: 700,
     wallMeanderScale: 0.0005, // Very low frequency for long sweeping curves
     wallMeanderAmp: 500,      // How far it swings left/right (total range ~1000px)
-    
+
     // Enhanced Wall Generation for Realism & Challenge
     wallWidthVariation: 0.3,  // Wall width varies by +/- 30%
     overhangScale: 0.001,     // Scale for overhang frequency
@@ -195,7 +195,7 @@ function getGrabbabilityAt(x, y) {
 
     // 2. Calculate normalized distance from center
     const normalizedDist = distFromCenter / halfWidth;
-    
+
     // Variable edge falloff - steeper at edges for more challenge
     const edgeExponent = 2 + (CONFIG.groundY - y) / 2000; // Gets steeper as you climb
     let wallIntegrity = 1 - Math.pow(normalizedDist, Math.min(6, edgeExponent));
@@ -221,8 +221,8 @@ function getGrabbabilityAt(x, y) {
     // 4. Apply wall features (cracks, ledges, smooth sections)
     const feature = getWallFeatures(x, y);
     let featureMultiplier = 1.0;
-    
-    switch(feature) {
+
+    switch (feature) {
         case 1: // Crack - easier to grip
             featureMultiplier = 1.4;
             break;
@@ -334,8 +334,8 @@ class WallRenderer {
 
                     // Feature-based coloring
                     let baseR = 45, baseG = 52, baseB = 54;
-                    
-                    switch(feature) {
+
+                    switch (feature) {
                         case 1: // Crack - darker with slight blue tint
                             baseR = 35; baseG = 40; baseB = 50;
                             break;
@@ -518,7 +518,7 @@ class BackgroundRenderer {
     draw(ctx, cameraX, cameraY) {
         const height = canvas.height;
         const groundLevel = CONFIG.groundY;
-        
+
         // Calculate view center altitude
         const viewCenterY = cameraY + height / 2;
         const altitude = Math.max(0, groundLevel - viewCenterY);
@@ -538,7 +538,7 @@ class BackgroundRenderer {
 
     drawSkyGradient(ctx, altitude, height) {
         let gradient;
-        
+
         if (altitude < 1000) {
             // Ground level: Bright blue sky
             gradient = ctx.createLinearGradient(0, 0, 0, height);
@@ -583,7 +583,7 @@ class BackgroundRenderer {
         // Draw stars first (background)
         for (let cy = startChunkY; cy <= endChunkY; cy++) {
             const chunk = this.getChunk(cy);
-            
+
             // Stars with twinkling effect
             if (altitude > 1000) {
                 const starAlpha = Math.min(1, (altitude - 1000) / 2000);
@@ -591,7 +591,7 @@ class BackgroundRenderer {
                 chunk.stars.forEach(star => {
                     const screenX = star.x - cameraX * 0.005;
                     const screenY = star.y - cameraY;
-                    
+
                     if (screenY > -10 && screenY < height + 10) {
                         const twinkle = 0.7 + Math.sin(Date.now() * star.twinkleSpeed) * 0.3;
                         ctx.globalAlpha = starAlpha * twinkle;
@@ -607,15 +607,15 @@ class BackgroundRenderer {
         // Draw clouds with parallax
         for (let cy = startChunkY; cy <= endChunkY; cy++) {
             const chunk = this.getChunk(cy);
-            
+
             chunk.clouds.forEach(cloud => {
                 const screenX = cloud.x - cameraX * cloud.depth;
                 const screenY = cloud.y - cameraY;
-                
+
                 if (screenY > -cloud.height && screenY < height + cloud.height) {
                     // Wrap horizontally
                     const wrappedX = ((screenX % (canvas.width * 4)) + (canvas.width * 4)) % (canvas.width * 4) - canvas.width * 1.5;
-                    
+
                     ctx.fillStyle = `rgba(255, 255, 255, ${cloud.opacity})`;
                     ctx.beginPath();
                     ctx.ellipse(wrappedX, screenY, cloud.width / 2, cloud.height / 2, 0, 0, Math.PI * 2);
@@ -628,15 +628,15 @@ class BackgroundRenderer {
         const time = Date.now() / 1000;
         for (let cy = startChunkY; cy <= endChunkY; cy++) {
             const chunk = this.getChunk(cy);
-            
+
             chunk.birds.forEach(bird => {
                 const screenX = bird.x - cameraX * 0.1 + bird.speed * time * 50;
                 const screenY = bird.y - cameraY + Math.sin(time + bird.x) * 20;
-                
+
                 if (screenY > -50 && screenY < height + 50) {
                     const wrappedX = ((screenX % (canvas.width * 3)) + (canvas.width * 3)) % (canvas.width * 3) - canvas.width;
                     const flap = Math.sin(time * bird.flapSpeed * 10) * 5;
-                    
+
                     ctx.fillStyle = '#333';
                     ctx.beginPath();
                     ctx.moveTo(wrappedX - bird.wingSpan / 2, screenY + flap);
@@ -650,18 +650,18 @@ class BackgroundRenderer {
         // Draw airplanes with contrails
         for (let cy = startChunkY; cy <= endChunkY; cy++) {
             const chunk = this.getChunk(cy);
-            
+
             chunk.airplanes.forEach(plane => {
                 const screenX = plane.x - cameraX * 0.05 + time * 100;
                 const screenY = plane.y - cameraY;
-                
+
                 if (screenY > -50 && screenY < height + 50) {
                     const wrappedX = ((screenX % (canvas.width * 4)) + (canvas.width * 4)) % (canvas.width * 4) - canvas.width * 1.5;
-                    
+
                     // Contrail
                     plane.contrail.push({ x: wrappedX, y: screenY });
                     if (plane.contrail.length > 50) plane.contrail.shift();
-                    
+
                     ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
                     ctx.lineWidth = 2;
                     ctx.beginPath();
@@ -672,7 +672,7 @@ class BackgroundRenderer {
                     });
                     ctx.stroke();
                     ctx.globalAlpha = 1.0;
-                    
+
                     // Airplane
                     ctx.fillStyle = '#ddd';
                     ctx.beginPath();
@@ -685,11 +685,11 @@ class BackgroundRenderer {
         // Draw weather balloons
         for (let cy = startChunkY; cy <= endChunkY; cy++) {
             const chunk = this.getChunk(cy);
-            
+
             chunk.weatherBalloons.forEach(balloon => {
                 const screenX = balloon.x - cameraX * 0.02;
                 const screenY = balloon.y - cameraY + Math.sin(time * 0.5) * 30;
-                
+
                 if (screenY > -100 && screenY < height + 100) {
                     // Balloon
                     const gradient = ctx.createRadialGradient(screenX, screenY - balloon.size / 3, 0, screenX, screenY, balloon.size);
@@ -699,7 +699,7 @@ class BackgroundRenderer {
                     ctx.beginPath();
                     ctx.arc(screenX, screenY, balloon.size, 0, Math.PI * 2);
                     ctx.fill();
-                    
+
                     // String
                     ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
                     ctx.lineWidth = 1;
@@ -714,16 +714,16 @@ class BackgroundRenderer {
 
     drawHeightIndicator(ctx, altitude) {
         const meters = Math.floor(altitude / 10);
-        
+
         // Draw altitude indicator in corner
         ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
         ctx.fillRect(canvas.width - 150, 20, 130, 50);
-        
+
         ctx.fillStyle = '#fff';
         ctx.font = 'bold 20px Arial';
         ctx.textAlign = 'right';
         ctx.fillText(`${meters}m`, canvas.width - 30, 50);
-        
+
         // Draw atmospheric layer name
         let layerName = '';
         if (altitude < 500) layerName = 'Ground Level';
@@ -731,7 +731,7 @@ class BackgroundRenderer {
         else if (altitude < 7000) layerName = 'Stratosphere';
         else if (altitude < 12000) layerName = 'Mesosphere';
         else layerName = 'Near Space';
-        
+
         ctx.font = '12px Arial';
         ctx.fillText(layerName, canvas.width - 30, 65);
         ctx.textAlign = 'left';
@@ -739,7 +739,7 @@ class BackgroundRenderer {
 
     cleanupChunks(cameraY) {
         const startChunkY = Math.floor(cameraY / this.chunkSize);
-        
+
         for (const [key, _] of this.bgElements) {
             if (key < startChunkY - 3 || key > startChunkY + 3) {
                 this.bgElements.delete(key);
@@ -1016,7 +1016,7 @@ let gamepadAPI = {
     ],
     lastButtonState: {},
     connected: false,
-    checkGamepad: function() {
+    checkGamepad: function () {
         const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
         if (gamepads.length === 0) return false;
 
@@ -1029,7 +1029,7 @@ let gamepadAPI = {
         }
         return false;
     },
-    updateButtons: function() {
+    updateButtons: function () {
         if (!gamepadAPI.controller) return;
 
         const buttons = gamepadAPI.controller.buttons;
@@ -1052,8 +1052,8 @@ let gamepadAPI = {
             gamepadAPI.lastButtonState[name] = currentState;
         });
     },
-    handleButtonPress: function(buttonName) {
-        switch(buttonName) {
+    handleButtonPress: function (buttonName) {
+        switch (buttonName) {
             case 'leftArm':
             case 'rightArm':
             case 'leftLeg':
@@ -1067,7 +1067,7 @@ let gamepadAPI = {
                     const limbY = limb.y;
                     const stickiness = getGrabbabilityAt(limbX, limbY);
                     if (stickiness >= CONFIG.grabThreshold) {
-                        limb.grabbedAt = { x: limbX, y: limbY, time: Date.now() };
+                        limb.grabbedAt = { x: limbX, y: limbY, time: Date.now(), stickiness: stickiness };
                         limb.reachProgress = 0;
                     }
                 }
@@ -1080,7 +1080,7 @@ let gamepadAPI = {
                 break;
         }
     },
-    handleStickInput: function() {
+    handleStickInput: function () {
         if (!gamepadAPI.controller) return;
 
         const axes = gamepadAPI.controller.axes;
@@ -1105,12 +1105,12 @@ let gamepadAPI = {
 };
 
 // Gamepad event listeners
-window.addEventListener('gamepadconnected', function(e) {
+window.addEventListener('gamepadconnected', function (e) {
     console.log('Gamepad connected:', e.gamepad.id);
     gamepadAPI.connected = true;
 });
 
-window.addEventListener('gamepaddisconnected', function(e) {
+window.addEventListener('gamepaddisconnected', function (e) {
     console.log('Gamepad disconnected:', e.gamepad.id);
     gamepadAPI.connected = false;
     gamepadAPI.controller = null;
@@ -1190,7 +1190,29 @@ function update() {
         gameState.stamina = Math.min(CONFIG.maxStamina, gameState.stamina + CONFIG.staminaRegen);
     } else {
         // Exertion -> Deplete
-        gameState.stamina = Math.max(0, gameState.stamina - CONFIG.staminaDepletion);
+        // [MODIFIED] Stamina depletion depends on hold quality
+        let totalStickiness = 0;
+        let holdingLimbs = 0;
+
+        if (player.limbs.leftArm.grabbedAt) {
+            totalStickiness += (player.limbs.leftArm.grabbedAt.stickiness || 0.5);
+            holdingLimbs++;
+        }
+        if (player.limbs.rightArm.grabbedAt) {
+            totalStickiness += (player.limbs.rightArm.grabbedAt.stickiness || 0.5);
+            holdingLimbs++;
+        }
+
+        let exertionFactor = 1.0;
+        if (holdingLimbs > 0) {
+            const avgStickiness = totalStickiness / holdingLimbs;
+            // Formula: Higher stickiness (1.0) -> Lower depletion (0.5x)
+            //          Lower stickiness (0.2) -> Higher depletion (1.3x)
+            // Base stickiness for "normal" depletion is around 0.5
+            exertionFactor = 1.5 - avgStickiness;
+        }
+
+        gameState.stamina = Math.max(0, gameState.stamina - (CONFIG.staminaDepletion * exertionFactor));
     }
 
     // Stamina Failure (Muscle Failure)
@@ -1993,19 +2015,19 @@ function updateGripMeter(grip) {
 }
 
 // Gym Environment Interface
-window.resetGame = function() {
+window.resetGame = function () {
     resetPlayerState();
     return getObservation();
 };
 
-window.step = function(action) {
+window.step = function (action) {
     // Parse action: [limb_selector, target_dx, target_dy, grab_trigger, piton_trigger, move_x]
     const limbIndex = Math.floor((action[0] + 1) * 2); // -1..1 -> 0..4
     const limbs = ['leftArm', 'rightArm', 'leftLeg', 'rightLeg'];
     if (limbIndex >= 0 && limbIndex < 4) {
         gameState.selectedLimb = limbs[limbIndex];
     }
-    
+
     // Apply limb movement
     const limb = player.limbs[gameState.selectedLimb];
     if (!limb.grabbedAt && !limb.onGround) {
@@ -2014,30 +2036,30 @@ window.step = function(action) {
         limb.y += action[2] * reach * 0.1;
         constrainLimbToBody(limb, gameState.selectedLimb);
     }
-    
+
     // Grab/release action
     if (action[3] > 0.5) {
         tryGrabLimb();
     }
-    
+
     // Piton placement
     if (action[4] > 0.5 && gameState.pitons.length < CONFIG.maxPitons) {
         placePiton();
     }
-    
+
     // Ground movement
     if (gameState.onGround) {
         player.x += action[5] * 3;
     }
-    
+
     // Update game physics
     update();
     render();
-    
+
     // Calculate reward
     const height = Math.max(0, Math.floor((CONFIG.groundY - player.y - CONFIG.upperLegLength - CONFIG.lowerLegLength - CONFIG.torsoLength / 2) / 50));
     const reward = height - gameState.maxHeight;
-    
+
     return {
         observation: getObservation(),
         reward: reward,
@@ -2068,13 +2090,13 @@ function getObservation() {
         player.limbs.rightLeg.y / canvas.height,
         player.limbs.rightLeg.grabbedAt ? 1 : (player.limbs.rightLeg.onGround ? 2 : 0)
     ];
-    
+
     // Grid observation: Local wall grabbability map
     const gridSize = 50;
     const grid = [];
     const playerGridX = Math.floor(player.x / canvas.width * gridSize);
     const playerGridY = Math.floor(player.y / canvas.height * gridSize);
-    
+
     for (let gy = 0; gy < gridSize; gy++) {
         const row = [];
         for (let gx = 0; gx < gridSize; gx++) {
@@ -2085,7 +2107,7 @@ function getObservation() {
         }
         grid.push(row);
     }
-    
+
     return {
         numeric: numeric,
         grid: grid
