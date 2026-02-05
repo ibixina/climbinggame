@@ -895,43 +895,48 @@ function handleKeyDown(e) {
     }
 
     else if (keyMap[e.key]) {
-        const newLimb = keyMap[e.key];
-        const previousLimb = gameState.selectedLimb;
-        const limb = player.limbs[newLimb];
-
-        if (newLimb !== previousLimb) {
-            const prevLimbObj = player.limbs[previousLimb];
-            prevLimbObj.wasReleased = false;
-            prevLimbObj.previousGrab = null;
-        }
-
-        if (newLimb === previousLimb) {
-            // Double press = Force Release
-            limb.previousGrab = null;
-            limb.wasReleased = false;
-            if (limb.grabbedAt || limb.onGround) {
-                limb.grabbedAt = null;
-                limb.onGround = false;
-            }
-        } else {
-            // Selection switch
-            if (limb.grabbedAt) {
-                limb.grabbedAt = null;
-                limb.wasReleased = true;
-            } else if (limb.onGround) {
-                limb.onGround = false;
-                limb.wasReleased = true;
-            }
-            limb.previousGrab = null;
-        }
-        gameState.selectedLimb = newLimb;
-        updateHUD();
+        selectLimb(keyMap[e.key]);
     }
     gameState.keysPressed[e.key] = true;
 }
 
 function handleKeyUp(e) {
     gameState.keysPressed[e.key] = false;
+}
+
+function selectLimb(newLimb) {
+    if (gameState.gameOver) return;
+
+    const previousLimb = gameState.selectedLimb;
+    const limb = player.limbs[newLimb];
+
+    if (newLimb !== previousLimb) {
+        const prevLimbObj = player.limbs[previousLimb];
+        prevLimbObj.wasReleased = false;
+        prevLimbObj.previousGrab = null;
+    }
+
+    if (newLimb === previousLimb) {
+        // Double press = Force Release
+        limb.previousGrab = null;
+        limb.wasReleased = false;
+        if (limb.grabbedAt || limb.onGround) {
+            limb.grabbedAt = null;
+            limb.onGround = false;
+        }
+    } else {
+        // Selection switch
+        if (limb.grabbedAt) {
+            limb.grabbedAt = null;
+            limb.wasReleased = true;
+        } else if (limb.onGround) {
+            limb.onGround = false;
+            limb.wasReleased = true;
+        }
+        limb.previousGrab = null;
+    }
+    gameState.selectedLimb = newLimb;
+    updateHUD();
 }
 
 function handleMouseMove(e) {
@@ -997,21 +1002,140 @@ function handleClick(e) {
 }
 
 // ============================================
-// LOGIC LOOPS
+// GAMEPAD SUPPORT
 // ============================================
+let gamepadAPI = {
+    controller: null,
+    buttons: [
+        { name: 'leftArm', index: 4, pressed: false },  // LB
+        { name: 'rightArm', index: 5, pressed: false }, // RB
+        { name: 'leftLeg', index: 6, pressed: false },  // LT
+        { name: 'rightLeg', index: 7, pressed: false }, // RT
+        { name: 'grab', index: 2, pressed: false },     // X (Xbox) / Square (PlayStation)
+        { name: 'piton', index: 0, pressed: false },    // A (Xbox) / Cross (PlayStation)
+    ],
+    lastButtonState: {},
+    connected: false,
+    checkGamepad: function() {
+        const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+        if (gamepads.length === 0) return false;
 
+        // Find first valid gamepad
+        for (let i = 0; i < gamepads.length; i++) {
+            if (gamepads[i] && gamepads[i].connected) {
+                gamepadAPI.controller = gamepads[i];
+                return true;
+            }
+        }
+        return false;
+    },
+    updateButtons: function() {
+        if (!gamepadAPI.controller) return;
+
+        const buttons = gamepadAPI.controller.buttons;
+        const buttonStates = {};
+
+        gamepadAPI.buttons.forEach(button => {
+            const pressed = buttons[button.index] ? buttons[button.index].pressed : false;
+            buttonStates[button.name] = pressed;
+        });
+
+        // Detect button presses (edge detection)
+        Object.keys(buttonStates).forEach(name => {
+            const currentState = buttonStates[name];
+            const lastState = gamepadAPI.lastButtonState[name] || false;
+
+            if (currentState && !lastState) {
+                gamepadAPI.handleButtonPress(name);
+            }
+
+            gamepadAPI.lastButtonState[name] = currentState;
+        });
+    },
+    handleButtonPress: function(buttonName) {
+        switch(buttonName) {
+            case 'leftArm':
+            case 'rightArm':
+            case 'leftLeg':
+            case 'rightLeg':
+                selectLimb(buttonName);
+                break;
+            case 'grab':
+                const limb = player.limbs[gameState.selectedLimb];
+                if (!limb.grabbedAt && !limb.onGround) {
+                    const limbX = limb.x;
+                    const limbY = limb.y;
+                    const stickiness = getGrabbabilityAt(limbX, limbY);
+                    if (stickiness >= CONFIG.grabThreshold) {
+                        limb.grabbedAt = { x: limbX, y: limbY, time: Date.now() };
+                        limb.reachProgress = 0;
+                    }
+                }
+                break;
+            case 'piton':
+                if (gameState.pitons.length === 0 ||
+                    gameState.pitons[gameState.pitons.length - 1].y > player.y + 100) {
+                    gameState.pitons.push({ x: player.x, y: player.y });
+                }
+                break;
+        }
+    },
+    handleStickInput: function() {
+        if (!gamepadAPI.controller) return;
+
+        const axes = gamepadAPI.controller.axes;
+        if (!axes || axes.length < 2) return;
+
+        const x = axes[0]; // Left stick X
+        const y = axes[1]; // Left stick Y
+
+        // Deadzone to prevent drift
+        const deadzone = 0.15;
+        if (Math.abs(x) < deadzone && Math.abs(y) < deadzone) return;
+
+        const limb = player.limbs[gameState.selectedLimb];
+        if (limb.grabbedAt || limb.onGround) return;
+
+        // Move selected limb based on stick input
+        const speed = CONFIG.limbReachSpeed * 1.5;
+        limb.x += x * speed;
+        limb.y += y * speed;
+        constrainLimbToBody(limb, gameState.selectedLimb);
+    }
+};
+
+// Gamepad event listeners
+window.addEventListener('gamepadconnected', function(e) {
+    console.log('Gamepad connected:', e.gamepad.id);
+    gamepadAPI.connected = true;
+});
+
+window.addEventListener('gamepaddisconnected', function(e) {
+    console.log('Gamepad disconnected:', e.gamepad.id);
+    gamepadAPI.connected = false;
+    gamepadAPI.controller = null;
+});
+
+// ============================================
+// LOGIC LOOPS
 // ============================================
 
 function gameLoop() {
     update();
     render();
     updateHUD();
-    drawStaminaBar(); // [NEW] Draw stamina UI
+    drawStaminaBar();
     // requestAnimationFrame(gameLoop); // Disabled for Gym - controlled via window.step()
 }
 
 function update() {
     if (gameState.gameOver) return;
+
+    // Handle gamepad input
+    if (gamepadAPI.checkGamepad()) {
+        gamepadAPI.updateButtons();
+        gamepadAPI.handleStickInput();
+    }
 
     updateSelectedLimb();
     updateGroundMovement();
@@ -1256,6 +1380,9 @@ function drawStaminaBar() {
 }
 
 function updateSelectedLimb() {
+    // Skip mouse following if gamepad is being used
+    if (gamepadAPI.controller) return;
+
     const limb = player.limbs[gameState.selectedLimb];
     if (!limb.grabbedAt && !limb.onGround) {
         const dx = gameState.mousePos.x - limb.x;
@@ -1598,17 +1725,6 @@ function drawPlayer() {
         }
     }
 
-    // Reach Indicator
-    const selected = player.limbs[gameState.selectedLimb];
-    if (!selected.grabbedAt) {
-        ctx.beginPath();
-        ctx.moveTo(selected.x, selected.y);
-        ctx.lineTo(gameState.mousePos.x, gameState.mousePos.y);
-        ctx.strokeStyle = `rgba(255, 255, 255, 0.3)`;
-        ctx.setLineDash([5, 5]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-    }
 }
 
 function drawLimb(limbName, limb, color, alpha) {
