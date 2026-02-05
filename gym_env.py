@@ -1,5 +1,5 @@
-import gym
-from gym import spaces
+import gymnasium as gym
+from gymnasium import spaces
 import numpy as np
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -8,7 +8,7 @@ import json
 import os
 
 class ClimbingGameEnv(gym.Env):
-    metadata = {'render.modes': ['human']}
+    metadata = {'render_modes': ['human']}
 
     def __init__(self, headless=True, game_path=None):
         super(ClimbingGameEnv, self).__init__()
@@ -57,35 +57,36 @@ class ClimbingGameEnv(gym.Env):
         # Wait for game to load
         time.sleep(1)
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
         if self.driver is None:
             self._launch_browser()
             
         try:
             obs_json = self.driver.execute_script("return window.resetGame();")
-            return self._process_obs(obs_json)
+            obs = self._process_obs(obs_json)
+            info = {}
+            return obs, info
         except Exception as e:
             print(f"Error during reset: {e}")
-            # Try reloading if things are broken
             self.driver.get(self.game_path)
             time.sleep(1)
             obs_json = self.driver.execute_script("return window.resetGame();")
-            return self._process_obs(obs_json)
+            obs = self._process_obs(obs_json)
+            info = {}
+            return obs, info
 
     def step(self, action):
-        # Convert numpy array to list for JSON serialization
         action_list = action.tolist()
         
-        # Execute step in JS
-        # We pass the action array directly
         result = self.driver.execute_script(f"return window.step({json.dumps(action_list)});")
         
         obs = self._process_obs(result['observation'])
         reward = result['reward']
-        done = result['done']
+        terminated = result['done']
+        truncated = False
         info = result.get('info', {})
         
-        return obs, reward, done, info
+        return obs, reward, terminated, truncated, info
 
     def _process_obs(self, obs_dict):
         # Convert lists back to numpy arrays
@@ -96,8 +97,8 @@ class ClimbingGameEnv(gym.Env):
             "grid": grid
         }
 
-    def render(self, mode='human'):
-        pass # Browser is already rendering if not headless
+    def render(self):
+        pass
 
     def close(self):
         if self.driver:
