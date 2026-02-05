@@ -1690,10 +1690,10 @@ function drawHoldPreview() {
     const limb = player.limbs[gameState.selectedLimb];
     if (limb.grabbedAt || limb.onGround) return;
 
-    // Check grabbability at mouse position
-    const mouseWorldX = gameState.mousePos.x;
-    const mouseWorldY = gameState.mousePos.y;
-    const stickiness = getGrabbabilityAt(mouseWorldX, mouseWorldY);
+    // Check grabbability at the LIMB position (not mouse position)
+    const limbX = limb.x;
+    const limbY = limb.y;
+    const stickiness = getGrabbabilityAt(limbX, limbY);
 
     if (stickiness < CONFIG.grabThreshold) return;
 
@@ -1708,18 +1708,18 @@ function drawHoldPreview() {
         color = 'rgba(244, 67, 54, 0.6)'; // Red
     }
 
-    // Draw preview circle
+    // Draw preview circle at LIMB position
     ctx.beginPath();
-    ctx.arc(mouseWorldX, mouseWorldY, 15, 0, Math.PI * 2);
+    ctx.arc(limbX, limbY, 15, 0, Math.PI * 2);
     ctx.fillStyle = color;
     ctx.fill();
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    // Draw quality indicator ring
+    // Draw quality indicator ring at LIMB position
     ctx.beginPath();
-    ctx.arc(mouseWorldX, mouseWorldY, 20, 0, Math.PI * 2);
+    ctx.arc(limbX, limbY, 20, 0, Math.PI * 2);
     ctx.strokeStyle = `rgba(255, 255, 255, ${0.3 + quality * 0.5})`;
     ctx.lineWidth = 3;
     ctx.stroke();
