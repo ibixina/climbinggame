@@ -72,7 +72,16 @@ const CONFIG = {
     // New Winding Wall Config
     wallWidth: 700,
     wallMeanderScale: 0.0005, // Very low frequency for long sweeping curves
-    wallMeanderAmp: 500       // How far it swings left/right (total range ~1000px)
+    wallMeanderAmp: 500,      // How far it swings left/right (total range ~1000px)
+    
+    // Enhanced Wall Generation for Realism & Challenge
+    wallWidthVariation: 0.3,  // Wall width varies by +/- 30%
+    overhangScale: 0.001,     // Scale for overhang frequency
+    overhangAmp: 150,         // Max wall setback (overhang depth)
+    featureScale: 0.015,      // Scale for cracks/ledges/features
+    difficultyScale: 0.0003,  // How fast difficulty increases with height
+    minWallWidth: 400,        // Minimum wall width at any point
+    maxWallWidth: 1000        // Maximum wall width at any point
 };
 
 // ============================================
@@ -142,34 +151,56 @@ const SimplexNoise = (function () {
 })();
 
 function getWallCenter(y) {
-    // 0 noise at y=0 naturally? Simplex returns range roughly -1 to 1.
-    // We want the wall to start roughly centered at ground level.
-    // y goes UP (negative in canvas coords usually? Wait. Game uses subtractive Y for height?)
-    // Let's check player.y.
-    // player.y starts at CONFIG.groundY.
-    // Higher up means SMALLER y value.
-    const noise = SimplexNoise.noise2D(0, y * CONFIG.wallMeanderScale);
+    // Combine multiple noise frequencies for more realistic meandering
+    const baseNoise = SimplexNoise.noise2D(0, y * CONFIG.wallMeanderScale);
+    const detailNoise = SimplexNoise.noise2D(100, y * CONFIG.wallMeanderScale * 2.5) * 0.3;
+    const noise = baseNoise + detailNoise;
     return (canvas.width / 2) + (noise * CONFIG.wallMeanderAmp);
+}
+
+function getWallWidth(y) {
+    // Variable wall width based on height - creates challenging pinch points
+    const widthNoise = SimplexNoise.noise2D(200, y * CONFIG.wallMeanderScale * 1.5);
+    const variation = 1 + (widthNoise * CONFIG.wallWidthVariation);
+    return Math.max(CONFIG.minWallWidth, Math.min(CONFIG.maxWallWidth, CONFIG.wallWidth * variation));
+}
+
+function getWallOverhang(y) {
+    // Returns how much the wall is set back (overhang effect)
+    // This creates realistic climbing challenge where you have to reach around
+    const overhangNoise = SimplexNoise.noise2D(300, y * CONFIG.overhangScale);
+    // Use abs to create sections of overhang in both directions
+    return Math.abs(overhangNoise) * CONFIG.overhangAmp;
+}
+
+function getWallFeatures(x, y) {
+    // Returns feature type at position: 0=normal, 1=crack, 2=ledge, 3=smooth
+    const featureNoise = SimplexNoise.noise2D(x * CONFIG.featureScale, y * CONFIG.featureScale);
+    if (featureNoise > 0.6) return 1; // Crack - better grip
+    if (featureNoise < -0.7) return 2; // Ledge - rest spot
+    if (Math.abs(featureNoise) < 0.15) return 3; // Smooth - harder
+    return 0; // Normal
 }
 
 function getGrabbabilityAt(x, y) {
     const wallCenterX = getWallCenter(y);
-    const halfWidth = CONFIG.wallWidth / 2;
+    const wallWidth = getWallWidth(y);
+    const halfWidth = wallWidth / 2;
 
     // 1. Hard Boundary Check with Edge Falloff
-    const distFromCenter = Math.min(Math.abs(x - wallCenterX), halfWidth + 100); // Clamp for safety
+    const distFromCenter = Math.min(Math.abs(x - wallCenterX), halfWidth + 100);
     if (distFromCenter > halfWidth) {
-        return 0; // Completely air outside the strip
+        return 0; // Air outside the wall
     }
 
-    // Reuse path logic but relative to the Winding center
-    // We can keep the "Golden Path" idea but it snakes INSIDE the snake.
-    // Or we just make the whole snake climbable.
-    // Let's make the center of the snake the "best" rock.
+    // 2. Calculate normalized distance from center
+    const normalizedDist = distFromCenter / halfWidth;
+    
+    // Variable edge falloff - steeper at edges for more challenge
+    const edgeExponent = 2 + (CONFIG.groundY - y) / 2000; // Gets steeper as you climb
+    let wallIntegrity = 1 - Math.pow(normalizedDist, Math.min(6, edgeExponent));
 
-    const normalizedDist = distFromCenter / halfWidth; // 0 at center, 1 at edge
-    let wallIntegrity = 1 - Math.pow(normalizedDist, 4); // Quartic falloff: Flat in middle, sharp drop at edges
-
+    // 3. Multi-octave noise for rock texture
     let value = 0;
     let amplitude = 1;
     let frequency = CONFIG.noiseScale;
@@ -187,11 +218,40 @@ function getGrabbabilityAt(x, y) {
 
     let noiseVal = value / maxValue;
 
-    // Hold Rarity
-    noiseVal = Math.pow(noiseVal, 1.3);
+    // 4. Apply wall features (cracks, ledges, smooth sections)
+    const feature = getWallFeatures(x, y);
+    let featureMultiplier = 1.0;
+    
+    switch(feature) {
+        case 1: // Crack - easier to grip
+            featureMultiplier = 1.4;
+            break;
+        case 2: // Ledge - much easier
+            featureMultiplier = 1.8;
+            break;
+        case 3: // Smooth section - harder
+            featureMultiplier = 0.6;
+            break;
+    }
 
-    // Apply Wall Integrity (Edge mask)
-    return noiseVal * wallIntegrity;
+    // 5. Difficulty scaling with height
+    // Higher you go = harder to find good holds
+    const height = Math.max(0, CONFIG.groundY - y);
+    const difficultyMultiplier = Math.max(0.4, 1 - (height * CONFIG.difficultyScale));
+
+    // 6. Apply overhang penalty
+    // Overhangs make it harder to hold on
+    const overhang = getWallOverhang(y);
+    const overhangPenalty = 1 - (overhang / CONFIG.overhangAmp) * 0.3;
+
+    // 7. Hold rarity (less good holds overall)
+    noiseVal = Math.pow(noiseVal, 1.5);
+
+    // Combine all factors
+    let finalGrabbability = noiseVal * wallIntegrity * featureMultiplier * difficultyMultiplier * overhangPenalty;
+
+    // Ensure minimum value for playability but cap max
+    return Math.max(0, Math.min(1, finalGrabbability));
 }
 
 function calculateJoint(startX, startY, endX, endY, length1, length2, bendDirection) {
@@ -245,8 +305,9 @@ class WallRenderer {
         for (let y = 0; y < this.chunkSize; y += this.resolution) {
             const worldY = startY + y;
             const wallCenterX = getWallCenter(worldY);
-            const wallLeft = wallCenterX - CONFIG.wallWidth / 2;
-            const wallRight = wallCenterX + CONFIG.wallWidth / 2;
+            const wallWidth = getWallWidth(worldY);
+            const wallLeft = wallCenterX - wallWidth / 2;
+            const wallRight = wallCenterX + wallWidth / 2;
 
             // Optimization: Only scan X within the wall bounds + padding
             // We align x to resolution grid
@@ -263,12 +324,28 @@ class WallRenderer {
                 const jitterX = (Math.random() - 0.5) * this.resolution;
                 const jitterY = (Math.random() - 0.5) * this.resolution;
 
-                const noiseVal = getGrabbabilityAt(x + this.resolution / 2 + jitterX, worldY + this.resolution / 2 + jitterY);
+                const sampleX = x + this.resolution / 2 + jitterX;
+                const sampleY = worldY + this.resolution / 2 + jitterY;
+                const noiseVal = getGrabbabilityAt(sampleX, sampleY);
+                const feature = getWallFeatures(sampleX, sampleY);
 
                 if (noiseVal >= CONFIG.grabThreshold) {
                     const quality = (noiseVal - CONFIG.grabThreshold) / (1 - CONFIG.grabThreshold);
 
-                    const baseR = 45, baseG = 52, baseB = 54;
+                    // Feature-based coloring
+                    let baseR = 45, baseG = 52, baseB = 54;
+                    
+                    switch(feature) {
+                        case 1: // Crack - darker with slight blue tint
+                            baseR = 35; baseG = 40; baseB = 50;
+                            break;
+                        case 2: // Ledge - lighter brown
+                            baseR = 80; baseG = 70; baseB = 60;
+                            break;
+                        case 3: // Smooth - grayish
+                            baseR = 60; baseG = 60; baseB = 65;
+                            break;
+                    }
 
                     // Add secondary microscopic noise for texture dusting
                     const dusting = (Math.random() - 0.5) * 10;
@@ -321,193 +398,357 @@ class WallRenderer {
 }
 
 // ============================================
-// BACKGROUND RENDERER SYSTEM
+// BACKGROUND RENDERER SYSTEM - DYNAMIC HEIGHT-BASED
 // ============================================
 class BackgroundRenderer {
     constructor() {
-        this.stars = [];
-        this.clouds = [];
-        this.hills = [];
-        this.trees = [];
-        this.initElements();
+        this.seed = Math.random() * 10000;
+        this.bgElements = new Map(); // Chunk-based storage for dynamic generation
+        this.chunkSize = 2000; // Generate elements in 2000px vertical chunks
+        this.lastCameraY = 0;
     }
 
-    initElements() {
-        // Space Stars (High Alt)
-        for (let i = 0; i < 200; i++) {
-            this.stars.push({
-                x: Math.random() * canvas.width * 2, // Wider for parallax
-                y: -(Math.random() * 5000) - 2000,
-                size: Math.random() * 2,
-                alpha: Math.random()
-            });
+    // Pseudo-random number generator for consistent generation
+    random(x, y) {
+        const n = Math.sin(x * 12.9898 + y * 78.233 + this.seed) * 43758.5453;
+        return n - Math.floor(n);
+    }
+
+    // Generate elements for a specific height chunk
+    generateChunk(chunkY) {
+        const elements = {
+            stars: [],
+            clouds: [],
+            birds: [],
+            airplanes: [],
+            weatherBalloons: []
+        };
+
+        const chunkTop = chunkY * this.chunkSize;
+        const chunkBottom = chunkTop + this.chunkSize;
+        const groundY = CONFIG.groundY;
+
+        // Height-based element generation
+        const altitude = groundY - chunkTop; // Pixels above ground
+
+        // Stars (appear above 1000px)
+        if (altitude > 1000) {
+            const starCount = Math.floor(50 + (altitude / 10000) * 150);
+            for (let i = 0; i < starCount; i++) {
+                const rx = this.random(chunkY, i * 3);
+                const ry = this.random(chunkY, i * 3 + 1);
+                elements.stars.push({
+                    x: rx * canvas.width * 3 - canvas.width,
+                    y: chunkTop + ry * this.chunkSize,
+                    size: 0.5 + this.random(chunkY, i * 3 + 2) * 2,
+                    twinkleSpeed: 0.02 + this.random(chunkY, i * 3 + 2) * 0.05
+                });
+            }
         }
 
-        // Clouds (Mid-High Alt)
-        for (let i = 0; i < 20; i++) {
-            this.clouds.push({
-                x: Math.random() * canvas.width * 2, // Wider for parallax
-                y: -Math.random() * 3000 + CONFIG.groundY - 500,
-                width: 100 + Math.random() * 200,
-                height: 40 + Math.random() * 40,
-                depth: 0.2 + Math.random() * 0.3 // Parallax Factor
-            });
+        // Clouds (500px to 8000px)
+        if (altitude > 500 && altitude < 15000) {
+            const cloudCount = 8 + Math.floor(this.random(chunkY, 999) * 8);
+            for (let i = 0; i < cloudCount; i++) {
+                const rx = this.random(chunkY, i * 7);
+                const ry = this.random(chunkY, i * 7 + 1);
+                elements.clouds.push({
+                    x: rx * canvas.width * 4 - canvas.width * 1.5,
+                    y: chunkTop + ry * this.chunkSize,
+                    width: 150 + this.random(chunkY, i * 7 + 2) * 250,
+                    height: 30 + this.random(chunkY, i * 7 + 3) * 50,
+                    depth: 0.15 + this.random(chunkY, i * 7 + 4) * 0.25,
+                    opacity: 0.3 + this.random(chunkY, i * 7 + 5) * 0.4
+                });
+            }
         }
 
-        // Hills (Mid Alt)
-        for (let i = 0; i < 15; i++) {
-            this.hills.push({
-                x: Math.random() * canvas.width * 2,
-                y: CONFIG.groundY - Math.random() * 500 - 100,
-                width: 300 + Math.random() * 500,
-                height: 200 + Math.random() * 300,
-                depth: 0.1 + Math.random() * 0.2, // Distant hill
-                color: `hsl(${100 + Math.random() * 40}, 30%, ${30 + Math.random() * 20}%)`
-            });
+        // Birds (500px to 3000px)
+        if (altitude > 500 && altitude < 6000) {
+            const birdCount = Math.floor(this.random(chunkY, 500) * 5);
+            for (let i = 0; i < birdCount; i++) {
+                const rx = this.random(chunkY, i * 11);
+                const ry = this.random(chunkY, i * 11 + 1);
+                elements.birds.push({
+                    x: rx * canvas.width * 3 - canvas.width,
+                    y: chunkTop + ry * this.chunkSize,
+                    size: 3 + this.random(chunkY, i * 11 + 2) * 4,
+                    wingSpan: 10 + this.random(chunkY, i * 11 + 3) * 15,
+                    speed: 1 + this.random(chunkY, i * 11 + 4) * 2,
+                    flapSpeed: 0.1 + this.random(chunkY, i * 11 + 5) * 0.1
+                });
+            }
         }
 
-        // Trees (Low Alt) - Only near ground
-        for (let i = 0; i < 50; i++) {
-            this.trees.push({
-                x: (Math.random() - 0.5) * canvas.width * 3 + canvas.width / 2,
-                y: CONFIG.groundY,
-                height: 50 + Math.random() * 100,
-                width: 20 + Math.random() * 20,
-                depth: 0.05 + Math.random() * 0.1, // Near bg
-                color: `hsl(${100 + Math.random() * 30}, 40%, ${20 + Math.random() * 15}%)`
-            });
+        // Airplanes (3000px to 10000px)
+        if (altitude > 3000 && altitude < 12000) {
+            if (this.random(chunkY, 777) > 0.7) {
+                const rx = this.random(chunkY, 888);
+                elements.airplanes.push({
+                    x: rx * canvas.width * 4 - canvas.width * 1.5,
+                    y: chunkTop + this.random(chunkY, 999) * this.chunkSize,
+                    contrail: []
+                });
+            }
         }
+
+        // Weather balloons (8000px+)
+        if (altitude > 8000) {
+            if (this.random(chunkY, 111) > 0.85) {
+                const rx = this.random(chunkY, 222);
+                elements.weatherBalloons.push({
+                    x: rx * canvas.width * 3 - canvas.width * 0.5,
+                    y: chunkTop + this.random(chunkY, 333) * this.chunkSize,
+                    size: 15 + this.random(chunkY, 444) * 10
+                });
+            }
+        }
+
+        return elements;
+    }
+
+    // Get or create chunk
+    getChunk(chunkY) {
+        if (!this.bgElements.has(chunkY)) {
+            this.bgElements.set(chunkY, this.generateChunk(chunkY));
+        }
+        return this.bgElements.get(chunkY);
     }
 
     draw(ctx, cameraX, cameraY) {
         const height = canvas.height;
         const groundLevel = CONFIG.groundY;
-        const skyHeight = 5000; // Height where it becomes full space
+        
+        // Calculate view center altitude
+        const viewCenterY = cameraY + height / 2;
+        const altitude = Math.max(0, groundLevel - viewCenterY);
 
-        // 1. Sky Gradient Calculation
-        // Calculate center of view height relative to ground
-        const viewHeight = groundLevel - (cameraY + height / 2);
+        // 1. Dynamic Sky Gradient based on altitude
+        this.drawSkyGradient(ctx, altitude, height);
 
-        // Blend colors based on height
-        // Low: Blue (#87CEEB) -> Mid: Dark Blue (#191970) -> High: Black (#000000)
-        let r, g, b;
+        // 2. Draw atmospheric layers based on altitude
+        this.drawAtmosphericLayers(ctx, cameraX, cameraY, altitude);
 
-        if (viewHeight < 1000) {
-            // Blue to Dark Blue
-            const t = Math.min(1, Math.max(0, viewHeight / 1000));
-            r = Math.floor(135 * (1 - t) + 25 * t);
-            g = Math.floor(206 * (1 - t) + 25 * t);
-            b = Math.floor(235 * (1 - t) + 112 * t);
+        // 3. Draw height indicator
+        this.drawHeightIndicator(ctx, altitude);
+
+        // 4. Cleanup old chunks
+        this.cleanupChunks(cameraY);
+    }
+
+    drawSkyGradient(ctx, altitude, height) {
+        let gradient;
+        
+        if (altitude < 1000) {
+            // Ground level: Bright blue sky
+            gradient = ctx.createLinearGradient(0, 0, 0, height);
+            gradient.addColorStop(0, '#1E90FF');
+            gradient.addColorStop(1, '#87CEEB');
+        } else if (altitude < 3000) {
+            // Low altitude: Transition to lighter blue
+            const t = (altitude - 1000) / 2000;
+            gradient = ctx.createLinearGradient(0, 0, 0, height);
+            gradient.addColorStop(0, `rgb(${30 - t * 20}, ${144 - t * 50}, ${255 - t * 50})`);
+            gradient.addColorStop(1, `rgb(${135 - t * 80}, ${206 - t * 100}, ${235 - t * 100})`);
+        } else if (altitude < 7000) {
+            // Mid altitude: Deep blue
+            const t = (altitude - 3000) / 4000;
+            gradient = ctx.createLinearGradient(0, 0, 0, height);
+            gradient.addColorStop(0, `rgb(${10}, ${94 - t * 70}, ${205 - t * 150})`);
+            gradient.addColorStop(1, `rgb(${55 - t * 40}, ${106 - t * 80}, ${179 - t * 130})`);
+        } else if (altitude < 12000) {
+            // High altitude: Dark blue to space transition
+            const t = (altitude - 7000) / 5000;
+            gradient = ctx.createLinearGradient(0, 0, 0, height);
+            gradient.addColorStop(0, `rgb(${10}, ${24 - t * 20}, ${55 - t * 45})`);
+            gradient.addColorStop(0.5, `rgb(${15 - t * 10}, ${39 - t * 30}, ${99 - t * 80})`);
+            gradient.addColorStop(1, `rgb(${25 - t * 20}, ${25 - t * 20}, ${112 - t * 100})`);
         } else {
-            // Dark Blue to Black
-            const t = Math.min(1, Math.max(0, (viewHeight - 1000) / 2000));
-            r = Math.floor(25 * (1 - t) + 0 * t);
-            g = Math.floor(25 * (1 - t) + 0 * t);
-            b = Math.floor(112 * (1 - t) + 0 * t);
+            // Space: Black with deep blue hint
+            gradient = ctx.createLinearGradient(0, 0, 0, height);
+            gradient.addColorStop(0, '#000000');
+            gradient.addColorStop(0.5, '#0a0a1a');
+            gradient.addColorStop(1, '#191970');
         }
 
-        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.fillStyle = gradient;
         ctx.fillRect(0, 0, canvas.width, height);
+    }
 
-        // 2. Stars
-        if (viewHeight > 500) {
-            const starAlphaBase = Math.min(1, (viewHeight - 500) / 1000);
-            ctx.fillStyle = 'white';
-            this.stars.forEach(star => {
-                // Simple parallax for stars (very slow)
-                const px = star.x - cameraX * 0.02;
-                const py = star.y - cameraY * 0.02;
+    drawAtmosphericLayers(ctx, cameraX, cameraY, altitude) {
+        const height = canvas.height;
+        const startChunkY = Math.floor(cameraY / this.chunkSize);
+        const endChunkY = Math.floor((cameraY + height) / this.chunkSize);
 
-                // Wrap X for infinite feel
-                const wrapW = canvas.width * 2;
-                const drawnX = ((px % wrapW) + wrapW) % wrapW - canvas.width * 0.5;
-                const drawnY = py - cameraY + height; // Relative to screen?, wait.
-                // Just draw fixed relative to camera for simplicity.
-                // Actually stars should be almost fixed on screen?
-                // Let's use simple drawing:
+        // Draw stars first (background)
+        for (let cy = startChunkY; cy <= endChunkY; cy++) {
+            const chunk = this.getChunk(cy);
+            
+            // Stars with twinkling effect
+            if (altitude > 1000) {
+                const starAlpha = Math.min(1, (altitude - 1000) / 2000);
+                ctx.fillStyle = 'white';
+                chunk.stars.forEach(star => {
+                    const screenX = star.x - cameraX * 0.005;
+                    const screenY = star.y - cameraY;
+                    
+                    if (screenY > -10 && screenY < height + 10) {
+                        const twinkle = 0.7 + Math.sin(Date.now() * star.twinkleSpeed) * 0.3;
+                        ctx.globalAlpha = starAlpha * twinkle;
+                        ctx.beginPath();
+                        ctx.arc(screenX, screenY, star.size, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                });
+                ctx.globalAlpha = 1.0;
+            }
+        }
 
-                // Draw relative to camera with parallax
-                const sX = star.x - cameraX * 0.01;
-                const sY = star.y - cameraY * 0.01;
-
-                // Wrap stars horizontally
-                const wrappedX = ((sX % canvas.width) + canvas.width) % canvas.width;
-
-                // Only draw if on screen (Y calculation tricky with infinite scroll? Stars are at fixed World Y)
-                // World Y for star is star.y. Screen Y = star.y - camera.y.
-                const screenY = star.y - cameraY;
-
-                if (screenY > -10 && screenY < height + 10) {
-                    ctx.globalAlpha = star.alpha * starAlphaBase;
+        // Draw clouds with parallax
+        for (let cy = startChunkY; cy <= endChunkY; cy++) {
+            const chunk = this.getChunk(cy);
+            
+            chunk.clouds.forEach(cloud => {
+                const screenX = cloud.x - cameraX * cloud.depth;
+                const screenY = cloud.y - cameraY;
+                
+                if (screenY > -cloud.height && screenY < height + cloud.height) {
+                    // Wrap horizontally
+                    const wrappedX = ((screenX % (canvas.width * 4)) + (canvas.width * 4)) % (canvas.width * 4) - canvas.width * 1.5;
+                    
+                    ctx.fillStyle = `rgba(255, 255, 255, ${cloud.opacity})`;
                     ctx.beginPath();
-                    ctx.arc(wrappedX, screenY, star.size, 0, Math.PI * 2);
+                    ctx.ellipse(wrappedX, screenY, cloud.width / 2, cloud.height / 2, 0, 0, Math.PI * 2);
                     ctx.fill();
                 }
             });
-            ctx.globalAlpha = 1.0;
         }
 
-        // 3. Hills (Mid/Background)
-        this.hills.forEach(hill => {
-            const px = hill.x - cameraX * hill.depth;
-            const py = hill.y - cameraY * hill.depth; // Parallax Y too? Maybe relative to horizon.
-            // Usually Y parallax is tricky if ground is fixed.
-            // Let's keep Y fixed relative to world ground.
-            const screenY = hill.y - cameraY;
+        // Draw birds (animated)
+        const time = Date.now() / 1000;
+        for (let cy = startChunkY; cy <= endChunkY; cy++) {
+            const chunk = this.getChunk(cy);
+            
+            chunk.birds.forEach(bird => {
+                const screenX = bird.x - cameraX * 0.1 + bird.speed * time * 50;
+                const screenY = bird.y - cameraY + Math.sin(time + bird.x) * 20;
+                
+                if (screenY > -50 && screenY < height + 50) {
+                    const wrappedX = ((screenX % (canvas.width * 3)) + (canvas.width * 3)) % (canvas.width * 3) - canvas.width;
+                    const flap = Math.sin(time * bird.flapSpeed * 10) * 5;
+                    
+                    ctx.fillStyle = '#333';
+                    ctx.beginPath();
+                    ctx.moveTo(wrappedX - bird.wingSpan / 2, screenY + flap);
+                    ctx.lineTo(wrappedX, screenY - bird.size);
+                    ctx.lineTo(wrappedX + bird.wingSpan / 2, screenY + flap);
+                    ctx.fill();
+                }
+            });
+        }
 
-            // Wrap X
-            const wrapW = canvas.width * 3;
-            const drawnX = ((px % wrapW) + wrapW) % wrapW - canvas.width;
+        // Draw airplanes with contrails
+        for (let cy = startChunkY; cy <= endChunkY; cy++) {
+            const chunk = this.getChunk(cy);
+            
+            chunk.airplanes.forEach(plane => {
+                const screenX = plane.x - cameraX * 0.05 + time * 100;
+                const screenY = plane.y - cameraY;
+                
+                if (screenY > -50 && screenY < height + 50) {
+                    const wrappedX = ((screenX % (canvas.width * 4)) + (canvas.width * 4)) % (canvas.width * 4) - canvas.width * 1.5;
+                    
+                    // Contrail
+                    plane.contrail.push({ x: wrappedX, y: screenY });
+                    if (plane.contrail.length > 50) plane.contrail.shift();
+                    
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    plane.contrail.forEach((pt, i) => {
+                        ctx.globalAlpha = i / plane.contrail.length * 0.3;
+                        if (i === 0) ctx.moveTo(pt.x, pt.y);
+                        else ctx.lineTo(pt.x, pt.y);
+                    });
+                    ctx.stroke();
+                    ctx.globalAlpha = 1.0;
+                    
+                    // Airplane
+                    ctx.fillStyle = '#ddd';
+                    ctx.beginPath();
+                    ctx.ellipse(wrappedX, screenY, 20, 4, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            });
+        }
 
-            if (screenY + hill.height > 0 && screenY < height) {
-                ctx.fillStyle = hill.color;
-                ctx.beginPath();
-                ctx.moveTo(drawnX, screenY + hill.height); // Bottom left (ish)
-                ctx.lineTo(drawnX + hill.width / 2, screenY); // Peak
-                ctx.lineTo(drawnX + hill.width, screenY + hill.height); // Bottom right
-                ctx.fill();
+        // Draw weather balloons
+        for (let cy = startChunkY; cy <= endChunkY; cy++) {
+            const chunk = this.getChunk(cy);
+            
+            chunk.weatherBalloons.forEach(balloon => {
+                const screenX = balloon.x - cameraX * 0.02;
+                const screenY = balloon.y - cameraY + Math.sin(time * 0.5) * 30;
+                
+                if (screenY > -100 && screenY < height + 100) {
+                    // Balloon
+                    const gradient = ctx.createRadialGradient(screenX, screenY - balloon.size / 3, 0, screenX, screenY, balloon.size);
+                    gradient.addColorStop(0, '#ff6b6b');
+                    gradient.addColorStop(1, '#c92a2a');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(screenX, screenY, balloon.size, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    // String
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(screenX, screenY + balloon.size);
+                    ctx.lineTo(screenX, screenY + balloon.size + 100);
+                    ctx.stroke();
+                }
+            });
+        }
+    }
+
+    drawHeightIndicator(ctx, altitude) {
+        const meters = Math.floor(altitude / 10);
+        
+        // Draw altitude indicator in corner
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(canvas.width - 150, 20, 130, 50);
+        
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 20px Arial';
+        ctx.textAlign = 'right';
+        ctx.fillText(`${meters}m`, canvas.width - 30, 50);
+        
+        // Draw atmospheric layer name
+        let layerName = '';
+        if (altitude < 500) layerName = 'Ground Level';
+        else if (altitude < 2000) layerName = 'Troposphere';
+        else if (altitude < 7000) layerName = 'Stratosphere';
+        else if (altitude < 12000) layerName = 'Mesosphere';
+        else layerName = 'Near Space';
+        
+        ctx.font = '12px Arial';
+        ctx.fillText(layerName, canvas.width - 30, 65);
+        ctx.textAlign = 'left';
+    }
+
+    cleanupChunks(cameraY) {
+        const startChunkY = Math.floor(cameraY / this.chunkSize);
+        
+        for (const [key, _] of this.bgElements) {
+            if (key < startChunkY - 3 || key > startChunkY + 3) {
+                this.bgElements.delete(key);
             }
-        });
+        }
+    }
 
-        // 4. Clouds
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
-        this.clouds.forEach(cloud => {
-            const px = cloud.x - cameraX * cloud.depth;
-            const screenY = cloud.y - cameraY;
-
-            // Wrap X
-            const wrapW = canvas.width * 3;
-            const drawnX = ((px % wrapW) + wrapW) % wrapW - canvas.width;
-
-            if (screenY + cloud.height > 0 && screenY < height) {
-                ctx.beginPath();
-                ctx.ellipse(drawnX, screenY, cloud.width / 2, cloud.height / 2, 0, 0, Math.PI * 2);
-                ctx.fill();
-            }
-        });
-
-        // 5. Trees (Foreground-ish background)
-        this.trees.forEach(tree => {
-            const px = tree.x - cameraX * tree.depth; // Move slower than wall
-            const screenY = tree.y - cameraY - tree.height; // Tree base at groundY
-
-            // No wrapping for trees, they are local to start area
-            const drawnX = px;
-
-            if (drawnX > -100 && drawnX < canvas.width + 100 && screenY < height && screenY + tree.height > 0) {
-                // Trunk
-                ctx.fillStyle = '#4e342e';
-                ctx.fillRect(drawnX - tree.width / 4, screenY + tree.height * 0.6, tree.width / 2, tree.height * 0.4);
-
-                // Leaves (Triangle)
-                ctx.fillStyle = tree.color;
-                ctx.beginPath();
-                ctx.moveTo(drawnX - tree.width, screenY + tree.height * 0.8);
-                ctx.lineTo(drawnX, screenY);
-                ctx.lineTo(drawnX + tree.width, screenY + tree.height * 0.8);
-                ctx.fill();
-            }
-        });
+    clear() {
+        this.bgElements.clear();
     }
 }
 
@@ -1622,6 +1863,106 @@ function updateGripMeter(grip) {
             // Good grip (Green)
         }
     }
+}
+
+// Gym Environment Interface
+window.resetGame = function() {
+    resetPlayerState();
+    return getObservation();
+};
+
+window.step = function(action) {
+    // Parse action: [limb_selector, target_dx, target_dy, grab_trigger, piton_trigger, move_x]
+    const limbIndex = Math.floor((action[0] + 1) * 2); // -1..1 -> 0..4
+    const limbs = ['leftArm', 'rightArm', 'leftLeg', 'rightLeg'];
+    if (limbIndex >= 0 && limbIndex < 4) {
+        gameState.selectedLimb = limbs[limbIndex];
+    }
+    
+    // Apply limb movement
+    const limb = player.limbs[gameState.selectedLimb];
+    if (!limb.grabbedAt && !limb.onGround) {
+        const reach = CONFIG.maxLimbReach;
+        limb.x += action[1] * reach * 0.1;
+        limb.y += action[2] * reach * 0.1;
+        constrainLimbToBody(limb, gameState.selectedLimb);
+    }
+    
+    // Grab/release action
+    if (action[3] > 0.5) {
+        tryGrabLimb();
+    }
+    
+    // Piton placement
+    if (action[4] > 0.5 && gameState.pitons.length < CONFIG.maxPitons) {
+        placePiton();
+    }
+    
+    // Ground movement
+    if (gameState.onGround) {
+        player.x += action[5] * 3;
+    }
+    
+    // Update game physics
+    update();
+    render();
+    
+    // Calculate reward
+    const height = Math.max(0, Math.floor((CONFIG.groundY - player.y - CONFIG.upperLegLength - CONFIG.lowerLegLength - CONFIG.torsoLength / 2) / 50));
+    const reward = height - gameState.maxHeight;
+    
+    return {
+        observation: getObservation(),
+        reward: reward,
+        done: gameState.gameOver,
+        info: { height: height }
+    };
+};
+
+function getObservation() {
+    // Numeric observation: Player state + Limb states (17 values)
+    const numeric = [
+        (player.x - canvas.width / 2) / canvas.width, // Relative X from center
+        player.x / canvas.width, // World X
+        player.y / canvas.height, // World Y
+        player.velocityY, // Velocity Y (starts at 0)
+        gameState.stamina / CONFIG.maxStamina, // Stamina
+        // Limb states: x, y, state (0=free, 1=grabbed, 2=ground)
+        player.limbs.leftArm.x / canvas.width,
+        player.limbs.leftArm.y / canvas.height,
+        player.limbs.leftArm.grabbedAt ? 1 : 0,
+        player.limbs.rightArm.x / canvas.width,
+        player.limbs.rightArm.y / canvas.height,
+        player.limbs.rightArm.grabbedAt ? 1 : 0,
+        player.limbs.leftLeg.x / canvas.width,
+        player.limbs.leftLeg.y / canvas.height,
+        player.limbs.leftLeg.grabbedAt ? 1 : (player.limbs.leftLeg.onGround ? 2 : 0),
+        player.limbs.rightLeg.x / canvas.width,
+        player.limbs.rightLeg.y / canvas.height,
+        player.limbs.rightLeg.grabbedAt ? 1 : (player.limbs.rightLeg.onGround ? 2 : 0)
+    ];
+    
+    // Grid observation: Local wall grabbability map
+    const gridSize = 50;
+    const grid = [];
+    const playerGridX = Math.floor(player.x / canvas.width * gridSize);
+    const playerGridY = Math.floor(player.y / canvas.height * gridSize);
+    
+    for (let gy = 0; gy < gridSize; gy++) {
+        const row = [];
+        for (let gx = 0; gx < gridSize; gx++) {
+            const worldX = (gx / gridSize) * canvas.width;
+            const worldY = (gy / gridSize) * canvas.height;
+            const grabbability = getGrabbabilityAt(worldX, worldY);
+            row.push(grabbability);
+        }
+        grid.push(row);
+    }
+    
+    return {
+        numeric: numeric,
+        grid: grid
+    };
 }
 
 // Init Game
