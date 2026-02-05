@@ -738,7 +738,8 @@ function drawStaminaBar() {
     const barWidth = 60;
     const barHeight = 8;
     const x = player.x - barWidth / 2;
-    const y = player.y - 70; // Above head
+    // [FIX] Convert world Y to screen Y by subtracting camera.y
+    const y = (player.y - gameState.camera.y) - 70; // Above head
 
     // Background
     ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
