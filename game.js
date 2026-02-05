@@ -1657,7 +1657,18 @@ function updateHUD() {
     `;
 }
 
+function isOnWall() {
+    // Check if any limb is grabbing a hold AND player is off the ground
+    const grabbing = Object.values(player.limbs).some(limb => limb.grabbedAt !== null);
+    const feetY = player.y + CONFIG.torsoLength / 2 + CONFIG.upperLegLength + CONFIG.lowerLegLength;
+    const offGround = feetY < CONFIG.groundY - 10; // Feet are at least 10px above ground
+    return grabbing && offGround;
+}
+
 function placePiton() {
+    // Only place piton if player is on a wall (at least one limb grabbing)
+    if (!isOnWall()) return;
+
     const newPiton = { x: player.x, y: player.y - 20 }; // Place slightly above center mass
     gameState.pitons.push(newPiton);
     if (gameState.pitons.length > CONFIG.maxPitons) {
