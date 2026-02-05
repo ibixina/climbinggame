@@ -1183,29 +1183,8 @@ function update() {
         // Safe & Stable (or on ground) -> Regenerate
         gameState.stamina = Math.min(CONFIG.maxStamina, gameState.stamina + CONFIG.staminaRegen);
     } else {
-        // Exertion -> Deplete based on grip quality
-        // Calculate average grip quality from attached limbs
-        let totalGripQuality = 0;
-        let attachedLimbs = 0;
-        for (const limbName in player.limbs) {
-            const limb = player.limbs[limbName];
-            if (limb.grabbedAt) {
-                totalGripQuality += limb.grabbedAt.stickiness;
-                attachedLimbs++;
-            }
-        }
-
-        // Average grip quality (0 to 1), default to 0.5 if no limbs attached
-        const avgGripQuality = attachedLimbs > 0 ? totalGripQuality / attachedLimbs : 0.5;
-
-        // Scale depletion: better grip = slower depletion
-        // Range: 0.5x to 1.5x base depletion rate
-        // Good holds (1.0) -> 0.5x depletion
-        // Bad holds (0.0) -> 1.5x depletion
-        const depletionMultiplier = 1.5 - avgGripQuality;
-        const actualDepletion = CONFIG.staminaDepletion * depletionMultiplier;
-
-        gameState.stamina = Math.max(0, gameState.stamina - actualDepletion);
+        // Exertion -> Deplete
+        gameState.stamina = Math.max(0, gameState.stamina - CONFIG.staminaDepletion);
     }
 
     // Stamina Failure (Muscle Failure)
