@@ -61,7 +61,12 @@ const CONFIG = {
     groundTopColor: '#8b7355',
     ropeColor: '#ff0055',
     pitonColor: '#b2bec3',
-    maxPitons: 10
+    maxPitons: 10,
+
+    // New Winding Wall Config
+    wallWidth: 700,
+    wallMeanderScale: 0.0005, // Very low frequency for long sweeping curves
+    wallMeanderAmp: 500       // How far it swings left/right (total range ~1000px)
 };
 
 // ============================================
@@ -130,19 +135,34 @@ const SimplexNoise = (function () {
     return { noise2D, seed };
 })();
 
+function getWallCenter(y) {
+    // 0 noise at y=0 naturally? Simplex returns range roughly -1 to 1.
+    // We want the wall to start roughly centered at ground level.
+    // y goes UP (negative in canvas coords usually? Wait. Game uses subtractive Y for height?)
+    // Let's check player.y.
+    // player.y starts at CONFIG.groundY.
+    // Higher up means SMALLER y value.
+    const noise = SimplexNoise.noise2D(0, y * CONFIG.wallMeanderScale);
+    return (canvas.width / 2) + (noise * CONFIG.wallMeanderAmp);
+}
+
 function getGrabbabilityAt(x, y) {
-    const pathNoise = SimplexNoise.noise2D(0, y * CONFIG.pathScale);
-    const pathCenter = canvas.width / 2 + pathNoise * (canvas.width * 0.4);
-    const distFromPath = Math.abs(x - pathCenter);
+    const wallCenterX = getWallCenter(y);
+    const halfWidth = CONFIG.wallWidth / 2;
 
-    // Smooth Transitions: Use a cubic falloff instead of linear
-    let pathFactor = Math.max(0, 1 - distFromPath / CONFIG.pathWidth);
-    pathFactor = pathFactor * pathFactor * (3 - 2 * pathFactor); // Smoothstep curve
+    // 1. Hard Boundary Check with Edge Falloff
+    const distFromCenter = Math.min(Math.abs(x - wallCenterX), halfWidth + 100); // Clamp for safety
+    if (distFromCenter > halfWidth) {
+        return 0; // Completely air outside the strip
+    }
 
-    // Path Discontinuity
-    const pathAvailability = SimplexNoise.noise2D(500, y * (CONFIG.pathScale * 2));
-    const pathStrength = Math.max(0, (pathAvailability + 0.6));
-    pathFactor *= Math.min(1, pathStrength);
+    // Reuse path logic but relative to the Winding center
+    // We can keep the "Golden Path" idea but it snakes INSIDE the snake.
+    // Or we just make the whole snake climbable.
+    // Let's make the center of the snake the "best" rock.
+
+    const normalizedDist = distFromCenter / halfWidth; // 0 at center, 1 at edge
+    let wallIntegrity = 1 - Math.pow(normalizedDist, 4); // Quartic falloff: Flat in middle, sharp drop at edges
 
     let value = 0;
     let amplitude = 1;
@@ -156,24 +176,16 @@ function getGrabbabilityAt(x, y) {
         value += amplitude * n;
         maxValue += amplitude;
         amplitude *= 0.5;
-        frequency *= 1.8; // Non-integer multiplier for less regularity
+        frequency *= 1.8;
     }
 
     let noiseVal = value / maxValue;
 
     // Hold Rarity
-    // [MODIFIED] Reduced power to 1.3 (was 1.8) to flatten the curve
-    // This makes "mediocre" holds more common and "impossible" smooth patches rarer
     noiseVal = Math.pow(noiseVal, 1.3);
 
-    // Organic Mixing: The path influences the rock quality smoothly
-    // [FIX] Drastically increased multipliers. 
-    // PREVIOUS: 0.45 was too low (avg noise 0.4 * 0.45 = 0.18, barely above 0.15 threshold).
-    // NEW: 0.8 base means avg noise 0.4 * 0.8 = 0.32, which is SOLID rock.
-    // The path is now valid everywhere, with the "Golden Path" just being slightly denser.
-    const baseMultiplier = 0.8 + (pathFactor * 0.2);
-
-    return noiseVal * baseMultiplier;
+    // Apply Wall Integrity (Edge mask)
+    return noiseVal * wallIntegrity;
 }
 
 function calculateJoint(startX, startY, endX, endY, length1, length2, bendDirection) {
@@ -220,14 +232,27 @@ class WallRenderer {
         const ctx = canvas.getContext('2d');
         const startY = chunkY * this.chunkSize;
 
-        // Base fill
-        ctx.fillStyle = CONFIG.wallColor;
-        ctx.fillRect(0, 0, width, this.chunkSize);
+        // Clear Background (transparent)
+        ctx.clearRect(0, 0, width, this.chunkSize);
 
         // Render noise with jittered sampling to remove grid lines
         for (let y = 0; y < this.chunkSize; y += this.resolution) {
             const worldY = startY + y;
-            for (let x = 0; x < width; x += this.resolution) {
+            const wallCenterX = getWallCenter(worldY);
+            const wallLeft = wallCenterX - CONFIG.wallWidth / 2;
+            const wallRight = wallCenterX + CONFIG.wallWidth / 2;
+
+            // Optimization: Only scan X within the wall bounds + padding
+            // We align x to resolution grid
+            let startX = Math.floor((wallLeft - 20) / this.resolution) * this.resolution;
+            let endX = Math.ceil((wallRight + 20) / this.resolution) * this.resolution;
+            startX = Math.max(0, startX);
+            endX = Math.min(width, endX);
+
+            for (let x = startX; x < width; x += this.resolution) {
+                // Check bounds exactly
+                if (x < wallLeft || x > wallRight) continue;
+
                 // Jittered sampling
                 const jitterX = (Math.random() - 0.5) * this.resolution;
                 const jitterY = (Math.random() - 0.5) * this.resolution;
@@ -253,13 +278,12 @@ class WallRenderer {
                     const drawH = this.resolution + (Math.random() * 2);
                     ctx.fillRect(x + (Math.random() - 0.5) * 2, y + (Math.random() - 0.5) * 2, drawW, drawH);
                 } else {
-                    // Subtle background detail
-                    if (Math.random() > 0.8) {
-                        const val = noiseVal / CONFIG.grabThreshold;
-                        const c = 35 + Math.floor(val * 10);
-                        ctx.fillStyle = `rgb(${c}, ${c + 2}, ${c + 4})`;
-                        ctx.fillRect(x, y, this.resolution, this.resolution);
-                    }
+                    // Wall Background (Non-grabbable rock)
+                    // We render this explicitely now since we cleared the canvas
+                    // Only draw inside the wall strip
+                    const baseC = 30;
+                    ctx.fillStyle = `rgb(${baseC}, ${baseC + 2}, ${baseC + 4})`;
+                    ctx.fillRect(x, y, this.resolution, this.resolution);
                 }
             }
         }
@@ -272,8 +296,9 @@ class WallRenderer {
 
         for (let cy = startChunkY; cy <= endChunkY; cy++) {
             const chunk = this.getChunk(cy, viewportWidth);
-            const dstY = cy * this.chunkSize;
-            ctx.drawImage(chunk, 0, dstY);
+            const dstY = cy * this.chunkSize - cameraY; // Adjust for camera
+            const dstX = -gameState.camera.x; // Shift left by camera X
+            ctx.drawImage(chunk, dstX, dstY);
         }
 
         // Cleanup distant chunks to save memory
@@ -290,13 +315,206 @@ class WallRenderer {
 }
 
 // ============================================
+// BACKGROUND RENDERER SYSTEM
+// ============================================
+class BackgroundRenderer {
+    constructor() {
+        this.stars = [];
+        this.clouds = [];
+        this.hills = [];
+        this.trees = [];
+        this.initElements();
+    }
+
+    initElements() {
+        // Space Stars (High Alt)
+        for (let i = 0; i < 200; i++) {
+            this.stars.push({
+                x: Math.random() * canvas.width * 2, // Wider for parallax
+                y: -(Math.random() * 5000) - 2000,
+                size: Math.random() * 2,
+                alpha: Math.random()
+            });
+        }
+
+        // Clouds (Mid-High Alt)
+        for (let i = 0; i < 20; i++) {
+            this.clouds.push({
+                x: Math.random() * canvas.width * 2, // Wider for parallax
+                y: -Math.random() * 3000 + CONFIG.groundY - 500,
+                width: 100 + Math.random() * 200,
+                height: 40 + Math.random() * 40,
+                depth: 0.2 + Math.random() * 0.3 // Parallax Factor
+            });
+        }
+
+        // Hills (Mid Alt)
+        for (let i = 0; i < 15; i++) {
+            this.hills.push({
+                x: Math.random() * canvas.width * 2,
+                y: CONFIG.groundY - Math.random() * 500 - 100,
+                width: 300 + Math.random() * 500,
+                height: 200 + Math.random() * 300,
+                depth: 0.1 + Math.random() * 0.2, // Distant hill
+                color: `hsl(${100 + Math.random() * 40}, 30%, ${30 + Math.random() * 20}%)`
+            });
+        }
+
+        // Trees (Low Alt) - Only near ground
+        for (let i = 0; i < 50; i++) {
+            this.trees.push({
+                x: (Math.random() - 0.5) * canvas.width * 3 + canvas.width / 2,
+                y: CONFIG.groundY,
+                height: 50 + Math.random() * 100,
+                width: 20 + Math.random() * 20,
+                depth: 0.05 + Math.random() * 0.1, // Near bg
+                color: `hsl(${100 + Math.random() * 30}, 40%, ${20 + Math.random() * 15}%)`
+            });
+        }
+    }
+
+    draw(ctx, cameraX, cameraY) {
+        const height = canvas.height;
+        const groundLevel = CONFIG.groundY;
+        const skyHeight = 5000; // Height where it becomes full space
+
+        // 1. Sky Gradient Calculation
+        // Calculate center of view height relative to ground
+        const viewHeight = groundLevel - (cameraY + height / 2);
+
+        // Blend colors based on height
+        // Low: Blue (#87CEEB) -> Mid: Dark Blue (#191970) -> High: Black (#000000)
+        let r, g, b;
+
+        if (viewHeight < 1000) {
+            // Blue to Dark Blue
+            const t = Math.min(1, Math.max(0, viewHeight / 1000));
+            r = Math.floor(135 * (1 - t) + 25 * t);
+            g = Math.floor(206 * (1 - t) + 25 * t);
+            b = Math.floor(235 * (1 - t) + 112 * t);
+        } else {
+            // Dark Blue to Black
+            const t = Math.min(1, Math.max(0, (viewHeight - 1000) / 2000));
+            r = Math.floor(25 * (1 - t) + 0 * t);
+            g = Math.floor(25 * (1 - t) + 0 * t);
+            b = Math.floor(112 * (1 - t) + 0 * t);
+        }
+
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.fillRect(0, 0, canvas.width, height);
+
+        // 2. Stars
+        if (viewHeight > 500) {
+            const starAlphaBase = Math.min(1, (viewHeight - 500) / 1000);
+            ctx.fillStyle = 'white';
+            this.stars.forEach(star => {
+                // Simple parallax for stars (very slow)
+                const px = star.x - cameraX * 0.02;
+                const py = star.y - cameraY * 0.02;
+
+                // Wrap X for infinite feel
+                const wrapW = canvas.width * 2;
+                const drawnX = ((px % wrapW) + wrapW) % wrapW - canvas.width * 0.5;
+                const drawnY = py - cameraY + height; // Relative to screen?, wait.
+                // Just draw fixed relative to camera for simplicity.
+                // Actually stars should be almost fixed on screen?
+                // Let's use simple drawing:
+
+                // Draw relative to camera with parallax
+                const sX = star.x - cameraX * 0.01;
+                const sY = star.y - cameraY * 0.01;
+
+                // Wrap stars horizontally
+                const wrappedX = ((sX % canvas.width) + canvas.width) % canvas.width;
+
+                // Only draw if on screen (Y calculation tricky with infinite scroll? Stars are at fixed World Y)
+                // World Y for star is star.y. Screen Y = star.y - camera.y.
+                const screenY = star.y - cameraY;
+
+                if (screenY > -10 && screenY < height + 10) {
+                    ctx.globalAlpha = star.alpha * starAlphaBase;
+                    ctx.beginPath();
+                    ctx.arc(wrappedX, screenY, star.size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            });
+            ctx.globalAlpha = 1.0;
+        }
+
+        // 3. Hills (Mid/Background)
+        this.hills.forEach(hill => {
+            const px = hill.x - cameraX * hill.depth;
+            const py = hill.y - cameraY * hill.depth; // Parallax Y too? Maybe relative to horizon.
+            // Usually Y parallax is tricky if ground is fixed.
+            // Let's keep Y fixed relative to world ground.
+            const screenY = hill.y - cameraY;
+
+            // Wrap X
+            const wrapW = canvas.width * 3;
+            const drawnX = ((px % wrapW) + wrapW) % wrapW - canvas.width;
+
+            if (screenY + hill.height > 0 && screenY < height) {
+                ctx.fillStyle = hill.color;
+                ctx.beginPath();
+                ctx.moveTo(drawnX, screenY + hill.height); // Bottom left (ish)
+                ctx.lineTo(drawnX + hill.width / 2, screenY); // Peak
+                ctx.lineTo(drawnX + hill.width, screenY + hill.height); // Bottom right
+                ctx.fill();
+            }
+        });
+
+        // 4. Clouds
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        this.clouds.forEach(cloud => {
+            const px = cloud.x - cameraX * cloud.depth;
+            const screenY = cloud.y - cameraY;
+
+            // Wrap X
+            const wrapW = canvas.width * 3;
+            const drawnX = ((px % wrapW) + wrapW) % wrapW - canvas.width;
+
+            if (screenY + cloud.height > 0 && screenY < height) {
+                ctx.beginPath();
+                ctx.ellipse(drawnX, screenY, cloud.width / 2, cloud.height / 2, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        });
+
+        // 5. Trees (Foreground-ish background)
+        this.trees.forEach(tree => {
+            const px = tree.x - cameraX * tree.depth; // Move slower than wall
+            const screenY = tree.y - cameraY - tree.height; // Tree base at groundY
+
+            // No wrapping for trees, they are local to start area
+            const drawnX = px;
+
+            if (drawnX > -100 && drawnX < canvas.width + 100 && screenY < height && screenY + tree.height > 0) {
+                // Trunk
+                ctx.fillStyle = '#4e342e';
+                ctx.fillRect(drawnX - tree.width / 4, screenY + tree.height * 0.6, tree.width / 2, tree.height * 0.4);
+
+                // Leaves (Triangle)
+                ctx.fillStyle = tree.color;
+                ctx.beginPath();
+                ctx.moveTo(drawnX - tree.width, screenY + tree.height * 0.8);
+                ctx.lineTo(drawnX, screenY);
+                ctx.lineTo(drawnX + tree.width, screenY + tree.height * 0.8);
+                ctx.fill();
+            }
+        });
+    }
+}
+
+const backgroundRenderer = new BackgroundRenderer();
+
+// ============================================
 // GAME STATE & LOGIC
 // ============================================
 
 const wallRenderer = new WallRenderer();
 
 let gameState = {
-    camera: { y: 0 },
+    camera: { x: 0, y: 0 }, // [MODIFIED] Added X support
     selectedLimb: 'rightArm',
     mousePos: { x: 0, y: 0 },
     maxHeight: 0,
@@ -360,7 +578,7 @@ function resetPlayerState() {
 
     // Reset Game State
     gameState = {
-        camera: { y: 0 },
+        camera: { x: 0, y: 0 },
         selectedLimb: 'rightArm',
         mousePos: { x: 0, y: 0 },
         maxHeight: 0,
@@ -467,7 +685,7 @@ function handleKeyUp(e) {
 }
 
 function handleMouseMove(e) {
-    gameState.mousePos.x = e.clientX;
+    gameState.mousePos.x = e.clientX + gameState.camera.x;
     gameState.mousePos.y = e.clientY + gameState.camera.y;
 }
 
@@ -737,7 +955,7 @@ function drawStaminaBar() {
     // Draw Stamina Bar near the player
     const barWidth = 60;
     const barHeight = 8;
-    const x = player.x - barWidth / 2;
+    const x = (player.x - gameState.camera.x) - barWidth / 2;
     // [FIX] Convert world Y to screen Y by subtracting camera.y
     const y = (player.y - gameState.camera.y) - 70; // Above head
 
@@ -954,8 +1172,18 @@ function updateBodyPosition() {
 }
 
 function updateCamera() {
-    const targetCameraY = player.y - canvas.height / 2;
-    gameState.camera.y += (targetCameraY - gameState.camera.y) * 0.05;
+    // Vertical tracking
+    const targetY = player.y - canvas.height * 0.6;
+    gameState.camera.y += (targetY - gameState.camera.y) * 0.1;
+
+    // Horizontal tracking
+    const targetX = player.x - canvas.width / 2;
+    gameState.camera.x += (targetX - gameState.camera.x) * 0.1;
+
+    // Limit Camera Y so we don't go below ground
+    if (gameState.camera.y + canvas.height > CONFIG.groundY + 100) {
+        gameState.camera.y = CONFIG.groundY + 100 - canvas.height;
+    }
 }
 
 function triggerGameOver() {
@@ -980,27 +1208,52 @@ window.restartGame = restartGame;
 // ============================================
 
 function render() {
-    // Background (Wall)
-    ctx.save();
-    ctx.translate(0, -gameState.camera.y);
+    // 1. Draw Background
+    backgroundRenderer.draw(ctx, gameState.camera.x, gameState.camera.y);
 
-    // Draw Wall using cached chunks
+    // Wall Renderer
+    ctx.save();
+    // Translate for camera. 
+    // WallRenderer now handles its own X translation internally via drawImage args?
+    // Let's check wallRenderer.draw logic.
+    // It does ctx.drawImage(chunk, -gameState.camera.x, dstY);
+    // So we should NOT translate X here if the renderer does it relative to 0.
+    // But we need to translate Y?
+    // WallRenderer logic: 
+    // const dstY = cy * this.chunkSize - cameraY;
+    // So WallRenderer handles BOTH X and Y subtraction.
+    // So we do NOT need ctx.translate here for the wall.
+
+    // HOWEVER, the wallRenderer chunks are drawn.
     wallRenderer.draw(ctx, gameState.camera.y, canvas.width, canvas.height);
+
+    ctx.restore();
+
+    // Context for WORLD objects (Player, Rope, Pitons etc)
+    // These are stored in World Coordinates.
+    // So we need to translate by (-camera.x, -camera.y)
+    ctx.save();
+    ctx.translate(-gameState.camera.x, -gameState.camera.y);
+
 
     // Draw Ground
     if (CONFIG.groundY > gameState.camera.y || CONFIG.groundY < gameState.camera.y + canvas.height + 100) {
         ctx.fillStyle = CONFIG.groundColor;
-        ctx.fillRect(0, CONFIG.groundY, canvas.width, 200);
+        ctx.fillRect(-10000, CONFIG.groundY, 20000, 200); // Infinite ground width
         ctx.fillStyle = CONFIG.groundTopColor;
-        ctx.fillRect(0, CONFIG.groundY, canvas.width, 10);
+        ctx.fillRect(-10000, CONFIG.groundY, 20000, 10);
         ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
-        for (let x = 0; x < canvas.width; x += 40) {
+
+        // Grass loops (world coordinates)
+        // Draw some decorative grass near the player
+        const playerChunk = Math.floor(player.x / 1000) * 1000;
+        for (let x = playerChunk - 2000; x < playerChunk + 2000; x += 40) {
             ctx.fillRect(x, CONFIG.groundY + 15, 20, 5);
             ctx.fillRect(x + 20, CONFIG.groundY + 35, 15, 5);
         }
     }
 
-    // Draw Player
+    // Draw Player and Rope
     drawRope();
     drawPitons();
     drawPlayer();
