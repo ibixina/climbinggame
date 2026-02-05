@@ -33,6 +33,38 @@ The game is built with vanilla JavaScript and HTML5 Canvas. The Gym environment 
 - `test_env.py`: Unit tests verifying the Gym interface.
 - `requirements.txt`: Python dependencies (`gym`, `numpy`, `selenium`).
 
+## Base Game (`game.js`)
+
+### Gameplay Overview
+A physics-based climbing game where the player controls a stick figure climber. The goal is to climb as high as possible on an infinite, procedurally generated wall.
+
+### Core Mechanics
+- **Limbs**: The player controls 4 limbs (Left/Right Arm/Leg) individually.
+- **Physics**: 
+    - **Stability**: At least 3 points of contact (hands/feet on holds) provide maximum stability.
+    - **Gravity**: Applies when fewer than 2 points of contact or when falling.
+    - **Pendulum**: If hanging by one arm, the body swings realistically.
+- **Stamina**: Depletes when hanging/climbing. Regenerates when stable (4 points of contact) or on the ground. Reaching 0 forces a release.
+- **Grip Strength**: Grip decreases if holding onto poor holds or for too long. Slipping occurs if total grip is insufficient.
+- **Safety**: Players can place **Pitons** (`S`) to create safety checkpoints. A rope connects the player to the last piton.
+
+### Controls (Human)
+- **Select Limb**:
+    - `Q` / `E`: Left / Right Arm
+    - `A` / `D`: Left / Right Leg
+- **Movement**:
+    - **Mouse**: Move the selected limb to the cursor position.
+    - **Click`: Grab a hold or plant a foot (if surface is valid). Click again to release.
+- **Actions**:
+    - `S`: Place a Piton (Safety anchor).
+    - `Space`: Resume from dangling state.
+    - `Arrow Keys`: Move left/right on the ground.
+
+### Rendering
+- **Canvas API**: Custom rendering engine.
+- **Procedural Wall**: Uses Simplex Noise to generate infinite terrain with varying "grabbability".
+- **Camera**: Smoothly tracks the player vertically and horizontally.
+
 ## RL Interface Details
 
 ### Action Space (`Box(6,)`)
