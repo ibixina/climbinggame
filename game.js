@@ -31,7 +31,7 @@ const CONFIG = {
 
     // Golden Path
     pathScale: 0.003,         // How fast the path winds (low freq)
-    pathWidth: 200,           // Width of the "good" zone
+    pathWidth: 250,           // [MODIFIED] Wider path for more playability
 
     // Grabbing & Difficulty
     grabThreshold: 0.15,      // Very lenient (can grab almost anything)
@@ -41,6 +41,12 @@ const CONFIG = {
     playerWeight: 0.95,       // Slightly easier to hold weight
     maxDisplayedGrip: 1.5,    // Grip amount that equals "100%" on the meter (1.5x body weight)
     fallGracePeriod: 60,      // Frames (~1 second) before falling when grip is lost
+    maxGripInstability: 120,  // [NEW] Frames before slipping when grip is insufficient (~2s)
+
+    // Stamina System
+    maxStamina: 100,
+    staminaDepletion: 0.3,    // Per frame (approx 5.5 seconds to empty from full hanging)
+    staminaRegen: 1.0,        // Per frame (fast recovery when stable)
 
     // Ground
     groundY: 0, // Will be set based on canvas height
@@ -156,13 +162,18 @@ function getGrabbabilityAt(x, y) {
     let noiseVal = value / maxValue;
 
     // Hold Rarity
-    noiseVal = Math.pow(noiseVal, 1.8);
+    // [MODIFIED] Reduced power to 1.3 (was 1.8) to flatten the curve
+    // This makes "mediocre" holds more common and "impossible" smooth patches rarer
+    noiseVal = Math.pow(noiseVal, 1.3);
 
     // Organic Mixing: The path influences the rock quality smoothly
-    const baseRock = 0.35 + (pathFactor * 0.25); // Path makes rock quality "higher" naturally
-    const effectivePath = pathFactor * 0.4;
+    // [FIX] Drastically increased multipliers. 
+    // PREVIOUS: 0.45 was too low (avg noise 0.4 * 0.45 = 0.18, barely above 0.15 threshold).
+    // NEW: 0.8 base means avg noise 0.4 * 0.8 = 0.32, which is SOLID rock.
+    // The path is now valid everywhere, with the "Golden Path" just being slightly denser.
+    const baseMultiplier = 0.8 + (pathFactor * 0.2);
 
-    return noiseVal * (baseRock + effectivePath);
+    return noiseVal * baseMultiplier;
 }
 
 function calculateJoint(startX, startY, endX, endY, length1, length2, bendDirection) {
@@ -290,10 +301,12 @@ let gameState = {
     mousePos: { x: 0, y: 0 },
     maxHeight: 0,
     bestHeight: 0,
+    stamina: 100, // [NEW] Starts full
     gameOver: false,
     falling: false,
     dangling: false,
     fallTimer: 0,
+    gripInstability: 0, // [NEW] Accumulates when grip is low
     onGround: true,
     keysPressed: {},
     pitons: []
@@ -352,10 +365,12 @@ function resetPlayerState() {
         mousePos: { x: 0, y: 0 },
         maxHeight: 0,
         bestHeight: gameState.bestHeight, // Preserve best height
+        stamina: 100,
         gameOver: false,
         falling: false,
         dangling: false,
         fallTimer: 0,
+        gripInstability: 0,
         onGround: true,
         keysPressed: {},
         pitons: []
@@ -495,6 +510,7 @@ function gameLoop() {
     update();
     render();
     updateHUD();
+    drawStaminaBar(); // [NEW] Draw stamina UI
     requestAnimationFrame(gameLoop);
 }
 
@@ -540,22 +556,70 @@ function update() {
 
     const feetOnGround = (player.limbs.leftLeg.onGround || player.limbs.rightLeg.onGround);
 
-    // Slipping Logic
-    if (totalGrip < CONFIG.playerWeight && !feetOnGround) {
-        let attachedLimbs = [];
-        for (const limbName in player.limbs) {
-            const limb = player.limbs[limbName];
-            if (limb.grabbedAt) attachedLimbs.push({ name: limbName, stickiness: limb.grabbedAt.stickiness });
+    // ============================
+    // STAMINA SYSTEM
+    // ============================
+    let pointsOfContact = 0;
+    if (player.limbs.leftArm.grabbedAt) pointsOfContact++;
+    if (player.limbs.rightArm.grabbedAt) pointsOfContact++;
+    if (player.limbs.leftLeg.grabbedAt || player.limbs.leftLeg.onGround) pointsOfContact++;
+    if (player.limbs.rightLeg.grabbedAt || player.limbs.rightLeg.onGround) pointsOfContact++;
+
+    if (pointsOfContact === 4 || feetOnGround) {
+        // Safe & Stable (or on ground) -> Regenerate
+        gameState.stamina = Math.min(CONFIG.maxStamina, gameState.stamina + CONFIG.staminaRegen);
+    } else {
+        // Exertion -> Deplete
+        gameState.stamina = Math.max(0, gameState.stamina - CONFIG.staminaDepletion);
+    }
+
+    // Stamina Failure (Muscle Failure)
+    if (gameState.stamina <= 0) {
+        // Force hands to release if they are holding on
+        if (player.limbs.leftArm.grabbedAt) {
+            player.limbs.leftArm.grabbedAt = null;
+            player.limbs.leftArm.wasReleased = true;
         }
-        if (attachedLimbs.length > 0) {
-            attachedLimbs.sort((a, b) => a.stickiness - b.stickiness);
-            const weakest = attachedLimbs[0];
-            const deficit = CONFIG.playerWeight - totalGrip;
-            const slipChance = 0.05 + (deficit * 0.1);
-            if (Math.random() < slipChance) {
+        if (player.limbs.rightArm.grabbedAt) {
+            player.limbs.rightArm.grabbedAt = null;
+            player.limbs.rightArm.wasReleased = true;
+        }
+        // This will naturally trigger the falling logic in the next frame if feet aren't enough
+    }
+
+    // Slipping Logic (Grip Fatigue)
+    if (totalGrip < CONFIG.playerWeight && !feetOnGround) {
+        // Grip is insufficient! Instability increases.
+        gameState.gripInstability += 1;
+
+        // Visual Instability (Shake)
+        const shake = (gameState.gripInstability / CONFIG.maxGripInstability) * 3;
+        player.x += (Math.random() - 0.5) * shake;
+        player.y += (Math.random() - 0.5) * shake;
+
+        if (gameState.gripInstability > CONFIG.maxGripInstability) {
+            // FATIGUE LIMIT REACHED - FORCE SLIP
+            let attachedLimbs = [];
+            for (const limbName in player.limbs) {
+                const limb = player.limbs[limbName];
+                if (limb.grabbedAt) attachedLimbs.push({ name: limbName, stickiness: limb.grabbedAt.stickiness });
+            }
+            if (attachedLimbs.length > 0) {
+                attachedLimbs.sort((a, b) => a.stickiness - b.stickiness); // Sort by weakest
+                const weakest = attachedLimbs[0];
+
+                // Slip the weakest limb
                 player.limbs[weakest.name].grabbedAt = null;
                 player.limbs[weakest.name].wasReleased = true;
+
+                // Reset instability partially to give a chance to recover before next slip
+                gameState.gripInstability = CONFIG.maxGripInstability * 0.5;
             }
+        }
+    } else {
+        // Grip is good. Recover logic.
+        if (gameState.gripInstability > 0) {
+            gameState.gripInstability -= 2; // Recover twice as fast as you tire
         }
     }
 
@@ -667,6 +731,33 @@ function update() {
 
     if (player.y > canvas.height + 500) triggerGameOver();
     updateGripMeter(totalGrip);
+}
+
+function drawStaminaBar() {
+    // Draw Stamina Bar near the player
+    const barWidth = 60;
+    const barHeight = 8;
+    const x = player.x - barWidth / 2;
+    const y = player.y - 70; // Above head
+
+    // Background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.fillRect(x, y, barWidth, barHeight);
+
+    // Fill
+    const pct = gameState.stamina / CONFIG.maxStamina;
+
+    // Color gradient
+    if (pct > 0.5) ctx.fillStyle = '#00e676'; // Green
+    else if (pct > 0.25) ctx.fillStyle = '#ffea00'; // Yellow
+    else ctx.fillStyle = '#ff1744'; // Red
+
+    ctx.fillRect(x, y, barWidth * pct, barHeight);
+
+    // Border
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, barWidth, barHeight);
 }
 
 function updateSelectedLimb() {
