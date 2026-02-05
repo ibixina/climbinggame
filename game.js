@@ -635,12 +635,15 @@ function handleKeyDown(e) {
         // Fall through to mark key as pressed
     }
 
-    // Resume / Unclip (Space)
+    // Resume / Unclip / Grab (Space)
     if (e.code === 'Space') {
         if (gameState.dangling) {
             gameState.dangling = false;
             player.velocityY = 0;
             updateHUD();
+        } else {
+            // Try to grab with selected limb
+            tryGrabLimb();
         }
     }
 
@@ -687,6 +690,34 @@ function handleKeyUp(e) {
 function handleMouseMove(e) {
     gameState.mousePos.x = e.clientX + gameState.camera.x;
     gameState.mousePos.y = e.clientY + gameState.camera.y;
+}
+
+function tryGrabLimb() {
+    if (gameState.gameOver) return;
+    const limb = player.limbs[gameState.selectedLimb];
+
+    // If already attached, release
+    if (limb.grabbedAt || limb.onGround) {
+        limb.grabbedAt = null;
+        limb.onGround = false;
+        limb.wasReleased = true;
+        limb.previousGrab = null;
+        updateHUD();
+        return;
+    }
+
+    // Try to grab at current limb position
+    const stickiness = getGrabbabilityAt(limb.x, limb.y);
+    if (stickiness >= CONFIG.grabThreshold) {
+        if (gameState.selectedLimb.includes('Leg')) {
+            const shoulderY = player.y - CONFIG.torsoLength / 2;
+            if (limb.y < shoulderY) return; // Leg can't grab above shoulders
+        }
+        limb.grabbedAt = { x: limb.x, y: limb.y, stickiness };
+        limb.wasReleased = false;
+        limb.previousGrab = null;
+        updateHUD();
+    }
 }
 
 function handleClick(e) {
@@ -937,8 +968,6 @@ function update() {
         }
         updateBodyPosition();
     }
-
-    updateCamera();
 
     updateCamera();
 
@@ -1256,6 +1285,7 @@ function render() {
     // Draw Player and Rope
     drawRope();
     drawPitons();
+    drawHoldPreview();
     drawPlayer();
 
     ctx.restore();
@@ -1406,6 +1436,93 @@ function drawPitons() {
         ctx.lineWidth = 2;
         ctx.stroke();
     }
+}
+
+function drawHoldPreview() {
+    // Only show preview for the selected limb if it's free
+    const limb = player.limbs[gameState.selectedLimb];
+    if (limb.grabbedAt || limb.onGround) return;
+
+    // Check grabbability at mouse position
+    const mouseWorldX = gameState.mousePos.x;
+    const mouseWorldY = gameState.mousePos.y;
+    const stickiness = getGrabbabilityAt(mouseWorldX, mouseWorldY);
+
+    if (stickiness < CONFIG.grabThreshold) return;
+
+    // Calculate quality color (green = good, yellow = medium, red = poor)
+    const quality = (stickiness - CONFIG.grabThreshold) / (1 - CONFIG.grabThreshold);
+    let color;
+    if (quality > 0.7) {
+        color = 'rgba(76, 175, 80, 0.6)'; // Green
+    } else if (quality > 0.4) {
+        color = 'rgba(255, 193, 7, 0.6)'; // Yellow
+    } else {
+        color = 'rgba(244, 67, 54, 0.6)'; // Red
+    }
+
+    // Draw preview circle
+    ctx.beginPath();
+    ctx.arc(mouseWorldX, mouseWorldY, 15, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Draw quality indicator ring
+    ctx.beginPath();
+    ctx.arc(mouseWorldX, mouseWorldY, 20, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.3 + quality * 0.5})`;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    // Draw nearby hold highlights (scan in grid pattern around selected limb)
+    drawNearbyHoldHighlights();
+}
+
+function drawNearbyHoldHighlights() {
+    const limb = player.limbs[gameState.selectedLimb];
+    if (limb.grabbedAt || limb.onGround) return;
+
+    const scanRadius = 80;
+    const scanStep = 20;
+    const limbX = limb.x;
+    const limbY = limb.y;
+
+    ctx.globalAlpha = 0.3;
+
+    for (let dx = -scanRadius; dx <= scanRadius; dx += scanStep) {
+        for (let dy = -scanRadius; dy <= scanRadius; dy += scanStep) {
+            const checkX = limbX + dx;
+            const checkY = limbY + dy;
+
+            // Skip if too close to limb position (already shown)
+            if (Math.abs(dx) < 15 && Math.abs(dy) < 15) continue;
+
+            const stickiness = getGrabbabilityAt(checkX, checkY);
+            if (stickiness >= CONFIG.grabThreshold) {
+                const quality = (stickiness - CONFIG.grabThreshold) / (1 - CONFIG.grabThreshold);
+
+                // Color based on quality
+                let color;
+                if (quality > 0.7) {
+                    color = '76, 175, 80'; // Green
+                } else if (quality > 0.4) {
+                    color = '255, 193, 7'; // Yellow
+                } else {
+                    color = '244, 67, 54'; // Red
+                }
+
+                ctx.fillStyle = `rgba(${color}, ${0.15 + quality * 0.25})`;
+                ctx.beginPath();
+                ctx.arc(checkX, checkY, 6 + quality * 6, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+    }
+
+    ctx.globalAlpha = 1.0;
 }
 
 function drawRope() {
