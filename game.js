@@ -128,7 +128,15 @@ function getGrabbabilityAt(x, y) {
     const pathNoise = SimplexNoise.noise2D(0, y * CONFIG.pathScale);
     const pathCenter = canvas.width / 2 + pathNoise * (canvas.width * 0.4);
     const distFromPath = Math.abs(x - pathCenter);
-    const pathFactor = Math.max(0, 1 - distFromPath / CONFIG.pathWidth);
+
+    // Smooth Transitions: Use a cubic falloff instead of linear
+    let pathFactor = Math.max(0, 1 - distFromPath / CONFIG.pathWidth);
+    pathFactor = pathFactor * pathFactor * (3 - 2 * pathFactor); // Smoothstep curve
+
+    // Path Discontinuity
+    const pathAvailability = SimplexNoise.noise2D(500, y * (CONFIG.pathScale * 2));
+    const pathStrength = Math.max(0, (pathAvailability + 0.6));
+    pathFactor *= Math.min(1, pathStrength);
 
     let value = 0;
     let amplitude = 1;
@@ -138,16 +146,23 @@ function getGrabbabilityAt(x, y) {
     for (let i = 0; i < CONFIG.noiseOctaves; i++) {
         let n = SimplexNoise.noise2D(x * frequency, y * frequency);
         n = 1 - Math.abs(n);
-        n = n * n * n;
+        n = n * n;
         value += amplitude * n;
         maxValue += amplitude;
         amplitude *= 0.5;
-        frequency *= 2;
+        frequency *= 1.8; // Non-integer multiplier for less regularity
     }
 
-    const noiseVal = value / maxValue;
-    const baseDetail = 0.55; // Increased from 0.4 to make general climbing possible everywhere
-    return noiseVal * (baseDetail + 0.45 * pathFactor); // Reduced path dominance slightly
+    let noiseVal = value / maxValue;
+
+    // Hold Rarity
+    noiseVal = Math.pow(noiseVal, 1.8);
+
+    // Organic Mixing: The path influences the rock quality smoothly
+    const baseRock = 0.35 + (pathFactor * 0.25); // Path makes rock quality "higher" naturally
+    const effectivePath = pathFactor * 0.4;
+
+    return noiseVal * (baseRock + effectivePath);
 }
 
 function calculateJoint(startX, startY, endX, endY, length1, length2, bendDirection) {
@@ -198,33 +213,42 @@ class WallRenderer {
         ctx.fillStyle = CONFIG.wallColor;
         ctx.fillRect(0, 0, width, this.chunkSize);
 
-        // Render noise
+        // Render noise with jittered sampling to remove grid lines
         for (let y = 0; y < this.chunkSize; y += this.resolution) {
             const worldY = startY + y;
             for (let x = 0; x < width; x += this.resolution) {
-                const noiseVal = getGrabbabilityAt(x + this.resolution / 2, worldY + this.resolution / 2);
+                // Jittered sampling
+                const jitterX = (Math.random() - 0.5) * this.resolution;
+                const jitterY = (Math.random() - 0.5) * this.resolution;
+
+                const noiseVal = getGrabbabilityAt(x + this.resolution / 2 + jitterX, worldY + this.resolution / 2 + jitterY);
 
                 if (noiseVal >= CONFIG.grabThreshold) {
-                    // Normalize quality of hold
                     const quality = (noiseVal - CONFIG.grabThreshold) / (1 - CONFIG.grabThreshold);
-                    const base = 60;
-                    const highlight = Math.floor(quality * 100);
 
-                    const r = base + highlight;
-                    const g = base + highlight + 10;
-                    const b = base + highlight;
+                    const baseR = 45, baseG = 52, baseB = 54;
+
+                    // Add secondary microscopic noise for texture dusting
+                    const dusting = (Math.random() - 0.5) * 10;
+                    const brightness = 8 + Math.floor(quality * 35) + dusting;
+
+                    const r = Math.max(0, Math.min(255, baseR + brightness));
+                    const g = Math.max(0, Math.min(255, baseG + brightness + 3));
+                    const b = Math.max(0, Math.min(255, baseB + brightness + 4));
 
                     ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                    ctx.fillRect(x, y, this.resolution, this.resolution);
+                    // Slight randomized overlaps break grid lines
+                    const drawW = this.resolution + (Math.random() * 2);
+                    const drawH = this.resolution + (Math.random() * 2);
+                    ctx.fillRect(x + (Math.random() - 0.5) * 2, y + (Math.random() - 0.5) * 2, drawW, drawH);
                 } else {
-                    // Unclimbable
-                    const val = (noiseVal / CONFIG.grabThreshold);
-                    const colorVal = 30 + Math.floor(val * 20);
-                    const r = colorVal;
-                    const g = colorVal + 5;
-                    const b = colorVal + 10;
-                    ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                    ctx.fillRect(x, y, this.resolution, this.resolution);
+                    // Subtle background detail
+                    if (Math.random() > 0.8) {
+                        const val = noiseVal / CONFIG.grabThreshold;
+                        const c = 35 + Math.floor(val * 10);
+                        ctx.fillStyle = `rgb(${c}, ${c + 2}, ${c + 4})`;
+                        ctx.fillRect(x, y, this.resolution, this.resolution);
+                    }
                 }
             }
         }
@@ -267,18 +291,12 @@ let gameState = {
     maxHeight: 0,
     bestHeight: 0,
     gameOver: false,
-    gameOver: false,
     falling: false,
-    dangling: false,
     dangling: false,
     fallTimer: 0,
     onGround: true,
     keysPressed: {},
-    pitons: [],
-    gamepadState: {
-        buttons: [], // Previous frame button states
-        axes: []
-    }
+    pitons: []
 };
 
 let player = {
@@ -335,15 +353,12 @@ function resetPlayerState() {
         maxHeight: 0,
         bestHeight: gameState.bestHeight, // Preserve best height
         gameOver: false,
-        gameOver: false,
         falling: false,
-        dangling: false,
         dangling: false,
         fallTimer: 0,
         onGround: true,
         keysPressed: {},
-        pitons: [],
-        gamepadState: { buttons: [], axes: [] }
+        pitons: []
     };
     updateHUD();
 }
@@ -386,6 +401,16 @@ function handleKeyDown(e) {
         }
         // Fall through to mark key as pressed
     }
+
+    // Resume / Unclip (Space)
+    if (e.code === 'Space') {
+        if (gameState.dangling) {
+            gameState.dangling = false;
+            player.velocityY = 0;
+            updateHUD();
+        }
+    }
+
     else if (keyMap[e.key]) {
         const newLimb = keyMap[e.key];
         const previousLimb = gameState.selectedLimb;
@@ -461,103 +486,12 @@ function handleClick(e) {
 }
 
 // ============================================
-// GAMEPAD HANDLING
-// ============================================
-
-function updateGamepad() {
-    const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
-    const gp = gamepads[0]; // Use first controller
-    if (!gp) return;
-
-    // 1. Stick Movement (Cursor)
-    const deadzone = 0.1;
-    if (Math.abs(gp.axes[0]) > deadzone || Math.abs(gp.axes[1]) > deadzone) {
-        // Move cursor relative to camera or screen?
-        // Let's move it like a mouse cursor speed
-        const speed = 15;
-        gameState.mousePos.x += gp.axes[0] * speed;
-        // Keep cursor within bounds for X
-        gameState.mousePos.x = Math.max(0, Math.min(canvas.width, gameState.mousePos.x));
-
-        gameState.mousePos.y += gp.axes[1] * speed;
-        // Y moves in world space, but mousePos is usually absolute world coords?
-        // MouseMove event adds 'camera.y'.
-        // Here we just modify mousePos directly.
-        // NOTE: mousePos.y includes camera.y.
-    }
-
-    // 2. Button Handling (Debounce)
-    const buttons = gp.buttons;
-    const pressed = (idx) => buttons[idx] && buttons[idx].pressed && !gameState.gamepadState.buttons[idx];
-
-    // X (Index 2) - Grab
-    if (pressed(2)) {
-        // Simulate Click
-        handleClick();
-    }
-
-    // A (Index 0) - Piton
-    if (pressed(0)) {
-        if (!gameState.falling && !gameState.gameOver) {
-            placePiton();
-        }
-    }
-
-    // LB (4) - Left Arm
-    if (pressed(4)) switchLimb('leftArm');
-
-    // RB (5) - Right Arm
-    if (pressed(5)) switchLimb('rightArm');
-
-    // LT (6) - Left Leg
-    if (pressed(6)) switchLimb('leftLeg');
-
-    // RT (7) - Right Leg
-    if (pressed(7)) switchLimb('rightLeg');
-
-    // Update state for next frame
-    for (let i = 0; i < buttons.length; i++) {
-        gameState.gamepadState.buttons[i] = buttons[i].pressed;
-    }
-}
-
-function switchLimb(newLimb) {
-    if (gameState.selectedLimb === newLimb) {
-        // Same limb pressed again? Double press logic handles release in `handleKeyDown`
-        // Let's implement simpler logic here: Toggle release?
-        // Match keyboard behavior:
-        const limb = player.limbs[newLimb];
-        limb.previousGrab = null;
-        limb.wasReleased = false;
-        if (limb.grabbedAt || limb.onGround) {
-            limb.grabbedAt = null;
-            limb.onGround = false;
-            limb.wasReleased = true;
-        }
-    } else {
-        // Switch
-        const previousLimb = player.limbs[gameState.selectedLimb];
-        if (previousLimb.grabbedAt) {
-            previousLimb.grabbedAt = null;
-            previousLimb.wasReleased = true;
-        } else if (previousLimb.onGround) {
-            previousLimb.onGround = false;
-            previousLimb.wasReleased = true;
-        }
-        previousLimb.previousGrab = null;
-        gameState.selectedLimb = newLimb;
-    }
-    updateHUD();
-}
-
-// ============================================
 // LOGIC LOOPS
 // ============================================
 
 // ============================================
 
 function gameLoop() {
-    updateGamepad(); // Check controller
     update();
     render();
     updateHUD();
@@ -594,10 +528,7 @@ function update() {
 
         player.velocityY *= 0.9;
 
-        // Auto-recover if we have enough grip!
-        if (totalGrip >= CONFIG.minGripToHold) {
-            gameState.dangling = false;
-        }
+        // Auto-recover removed. User must press Space/Y to resume.
 
         // Stop dangling if we touch ground
         if (player.y >= CONFIG.groundY - 100) {
@@ -1055,12 +986,6 @@ function drawPlayer() {
         ctx.setLineDash([5, 5]);
         ctx.stroke();
         ctx.setLineDash([]);
-
-        // Draw Cursor Target (Useful for gamepad)
-        ctx.beginPath();
-        ctx.arc(gameState.mousePos.x, gameState.mousePos.y, 8, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
-        ctx.stroke();
     }
 }
 
@@ -1112,6 +1037,7 @@ function updateHUD() {
         <div class="current-height">Height: ${displayHeight}m</div>
         <div class="best-height">Best: ${gameState.bestHeight}m</div>
         <div style="font-size: 10px; color: #888; margin-top: 4px">Pitons: ${gameState.pitons.length}/${CONFIG.maxPitons}</div>
+        ${gameState.dangling ? '<div style="color: #4caf50; font-size: 11px; margin-top: 4px; animation: pulse 1s infinite">DANGLING<br>Press SPACE to Resume</div>' : ''}
     `;
 }
 
