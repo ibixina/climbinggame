@@ -1,54 +1,77 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Climbing Game</title>
     <link rel="stylesheet" href="styles.css">
 </head>
-
 <body>
     <canvas id="gameCanvas"></canvas>
-
-    <div id="hud">
-        <div class="hud-panel">
-            <h2>Controls</h2>
-            <div class="control-grid">
-                <div class="limb-control" data-limb="leftArm">
-                    <span class="key">Q</span>
-                    <span class="label">Left Arm</span>
-                </div>
-                <div class="limb-control" data-limb="rightArm">
-                    <span class="key">E</span>
-                    <span class="label">Right Arm</span>
-                </div>
-                <div class="limb-control" data-limb="leftLeg">
-                    <span class="key">A</span>
-                    <span class="label">Left Leg</span>
-                </div>
-                <div class="limb-control" data-limb="rightLeg">
-                    <span class="key">D</span>
-                    <span class="label">Right Leg</span>
-                </div>
-            </div>
-            <div class="info">
-                <p>Move cursor to position limb</p>
-                <p>Click hold to grab/step</p>
-            </div>
+    
+    <!-- Minimal Top Bar -->
+    <div id="top-bar">
+        <div class="height-badge">
+            <span class="altitude-icon">▲</span>
+            <span id="heightDisplay">0m</span>
         </div>
-        <div class="status-panel">
-            <div class="grip-meter">
-                <span>Grip: </span>
-                <div class="meter-bar">
-                    <div class="meter-fill" id="gripMeter"></div>
-                </div>
-            </div>
-            <div id="heightDisplay">Height: 0m</div>
+        <div class="piton-counter">
+            <span class="piton-icon">⛓</span>
+            <span id="pitonCount">0/10</span>
         </div>
     </div>
 
+    <!-- Compact Controls Guide -->
+    <div id="controls-guide">
+        <div class="limb-keys">
+            <div class="limb-key" data-limb="leftArm">
+                <kbd>Q</kbd>
+                <span class="limb-label">L-Arm</span>
+            </div>
+            <div class="limb-key" data-limb="rightArm">
+                <kbd>E</kbd>
+                <span class="limb-label">R-Arm</span>
+            </div>
+            <div class="limb-key" data-limb="leftLeg">
+                <kbd>A</kbd>
+                <span class="limb-label">L-Leg</span>
+            </div>
+            <div class="limb-key" data-limb="rightLeg">
+                <kbd>D</kbd>
+                <span class="limb-label">R-Leg</span>
+            </div>
+        </div>
+        <div class="action-hints">
+            <div class="action-hint">
+                <kbd>SPACE</kbd>
+                <span>Grab/Release</span>
+            </div>
+            <div class="action-hint">
+                <kbd>S</kbd>
+                <span>Piton</span>
+            </div>
+            <div class="action-hint">
+                <span class="mouse-icon">🖱</span>
+                <span>Move Limb</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Grip Meter - Bottom Left -->
+    <div id="grip-panel">
+        <div class="grip-label">GRIP</div>
+        <div class="rope-meter">
+            <div class="rope-fill" id="gripMeter"></div>
+            <div class="rope-marker" id="gripThresholdLine"></div>
+        </div>
+        <div class="stamina-bar-container">
+            <div class="stamina-fill" id="staminaMeter"></div>
+        </div>
+    </div>
+    
+    <!-- Status Messages -->
+    <div id="status-overlay"></div>
+    
     <script src="game_gym.js"></script>
 </body>
-
 </html>

@@ -789,6 +789,16 @@ function init() {
     canvas.addEventListener('mousemove', handleMouseMove);
     canvas.addEventListener('click', handleClick);
 
+    // Add click handlers for limb keys in UI
+    document.querySelectorAll('.limb-key').forEach(el => {
+        el.addEventListener('click', () => {
+            const limbName = el.dataset.limb;
+            if (limbName) {
+                selectLimb(limbName);
+            }
+        });
+    });
+
     resetPlayerState();
     requestAnimationFrame(gameLoop);
 }
@@ -1118,7 +1128,6 @@ function gameLoop() {
     update();
     render();
     updateHUD();
-    drawStaminaBar();
     requestAnimationFrame(gameLoop);
 }
 
@@ -1367,33 +1376,7 @@ function update() {
     updateGripMeter(totalGrip);
 }
 
-function drawStaminaBar() {
-    // Draw Stamina Bar near the player
-    const barWidth = 60;
-    const barHeight = 8;
-    const x = (player.x - gameState.camera.x) - barWidth / 2;
-    // [FIX] Convert world Y to screen Y by subtracting camera.y
-    const y = (player.y - gameState.camera.y) - 70; // Above head
 
-    // Background
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-    ctx.fillRect(x, y, barWidth, barHeight);
-
-    // Fill
-    const pct = gameState.stamina / CONFIG.maxStamina;
-
-    // Color gradient
-    if (pct > 0.5) ctx.fillStyle = '#00e676'; // Green
-    else if (pct > 0.25) ctx.fillStyle = '#ffea00'; // Yellow
-    else ctx.fillStyle = '#ff1744'; // Red
-
-    ctx.fillRect(x, y, barWidth * pct, barHeight);
-
-    // Border
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(x, y, barWidth, barHeight);
-}
 
 function updateSelectedLimb() {
     // Skip mouse following if gamepad is being used
@@ -1609,7 +1592,20 @@ function triggerGameOver() {
     gameState.gameOver = true;
     const overlay = document.createElement('div');
     overlay.className = 'game-over';
-    overlay.innerHTML = `<h1>FELL!</h1><p>Max Height: ${gameState.maxHeight}m</p><button onclick="restartGame()">Try Again</button>`;
+    overlay.innerHTML = `
+        <h1>FELL!</h1>
+        <div class="stats">
+            <div class="stat-row">
+                <span class="stat-label">Max Height</span>
+                <span class="stat-value">${gameState.maxHeight}m</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Best Height</span>
+                <span class="stat-value">${gameState.bestHeight}m</span>
+            </div>
+        </div>
+        <button onclick="restartGame()">Try Again</button>
+    `;
     document.body.appendChild(overlay);
     setTimeout(() => overlay.classList.add('visible'), 10);
 }
@@ -1777,7 +1773,8 @@ function drawLimb(limbName, limb, color, alpha) {
 }
 
 function updateHUD() {
-    document.querySelectorAll('.limb-control').forEach(el => {
+    // Update limb key states
+    document.querySelectorAll('.limb-key').forEach(el => {
         const limbName = el.dataset.limb;
         el.classList.toggle('active', limbName === gameState.selectedLimb);
         el.classList.toggle('attached', player.limbs[limbName]?.grabbedAt !== null);
@@ -1787,12 +1784,45 @@ function updateHUD() {
     const currentRawHeight = Math.max(0, (CONFIG.groundY - player.y - CONFIG.upperLegLength - CONFIG.lowerLegLength - CONFIG.torsoLength / 2) / 50);
     const displayHeight = Math.floor(currentRawHeight);
 
-    document.getElementById('heightDisplay').innerHTML = `
-        <div class="current-height">Height: ${displayHeight}m</div>
-        <div class="best-height">Best: ${gameState.bestHeight}m</div>
-        <div style="font-size: 10px; color: #888; margin-top: 4px">Pitons: ${gameState.pitons.length}/${CONFIG.maxPitons}</div>
-        ${gameState.dangling ? '<div style="color: #4caf50; font-size: 11px; margin-top: 4px; animation: pulse 1s infinite">DANGLING<br>Press SPACE to Resume</div>' : ''}
-    `;
+    // Update height display
+    document.getElementById('heightDisplay').textContent = `${displayHeight}m`;
+    
+    // Update piton counter
+    document.getElementById('pitonCount').textContent = `${gameState.pitons.length}/${CONFIG.maxPitons}`;
+    
+    // Update stamina meter
+    const staminaMeter = document.getElementById('staminaMeter');
+    if (staminaMeter) {
+        const staminaPct = (gameState.stamina / CONFIG.maxStamina) * 100;
+        staminaMeter.style.width = `${staminaPct}%`;
+    }
+    
+    // Show status messages
+    updateStatusOverlay();
+}
+
+function updateStatusOverlay() {
+    const overlay = document.getElementById('status-overlay');
+    if (!overlay) return;
+    
+    // Clear existing messages
+    overlay.innerHTML = '';
+    
+    // Show dangling message
+    if (gameState.dangling) {
+        const msg = document.createElement('div');
+        msg.className = 'status-message dangling';
+        msg.innerHTML = '⛓ DANGLING<br><small>Press SPACE to Resume</small>';
+        overlay.appendChild(msg);
+    }
+    // Show falling warning
+    else if (gameState.fallTimer > 0 && gameState.fallTimer < CONFIG.fallGracePeriod) {
+        const msg = document.createElement('div');
+        msg.className = 'status-message falling';
+        const remaining = Math.ceil((CONFIG.fallGracePeriod - gameState.fallTimer) / 60 * 10) / 10;
+        msg.innerHTML = `⚠ SLIPPING<br><small>${remaining}s</small>`;
+        overlay.appendChild(msg);
+    }
 }
 
 function isOnWall() {
@@ -1954,8 +1984,8 @@ function drawRope() {
 }
 
 function updateGripMeter(grip) {
-    const meterContainer = document.querySelector('.meter-bar');
     const meterFill = document.getElementById('gripMeter');
+    const thresholdLine = document.getElementById('gripThresholdLine');
 
     // Scale: 0 to CONFIG.playerWeight * 1.5
     // 100% = 1.5x body weight (Super secure)
@@ -1964,23 +1994,9 @@ function updateGripMeter(grip) {
     const percentage = Math.min(100, (grip / maxScale) * 100);
     const slipThresholdPct = (1 / 1.5) * 100; // ~66%
 
-    // Add visual marker for threshold if not exists
-    let thresholdLine = document.getElementById('gripThresholdLine');
-    if (!thresholdLine) {
-        thresholdLine = document.createElement('div');
-        thresholdLine.id = 'gripThresholdLine';
-        thresholdLine.style.position = 'absolute';
+    // Update threshold marker position
+    if (thresholdLine) {
         thresholdLine.style.left = `${slipThresholdPct}%`;
-        thresholdLine.style.top = '0';
-        thresholdLine.style.bottom = '0';
-        thresholdLine.style.width = '2px';
-        thresholdLine.style.backgroundColor = 'rgba(255,255,255,0.8)';
-        thresholdLine.style.zIndex = '10';
-        thresholdLine.title = "Minimum Grip to Avoid Slipping";
-
-        // Ensure parent is relative
-        meterContainer.style.position = 'relative';
-        meterContainer.appendChild(thresholdLine);
     }
 
     // If in grace period, calculate remaining time
